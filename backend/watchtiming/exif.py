@@ -1,0 +1,126 @@
+"""Capture timestamp from EXIF → UTC, with subseconds.
+
+Pure functions: bytes in, values out. No file system, no framework code.
+"""
+
+import io
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta, timezone
+
+import pillow_heif
+from PIL import ExifTags, Image, UnidentifiedImageError
+
+pillow_heif.register_heif_opener()
+
+_TAG_MAKE = 0x010F
+_TAG_MODEL = 0x0110
+_TAG_ORIENTATION = 0x0112
+_TAG_DATETIME_ORIGINAL = 0x9003
+_TAG_OFFSET_TIME_ORIGINAL = 0x9011
+_TAG_SUBSEC_TIME_ORIGINAL = 0x9291
+
+
+class InvalidImageError(ValueError):
+    """The bytes are not an image we can open."""
+
+
+class InvalidTimestampError(ValueError):
+    """No usable capture time: missing, malformed or implausible."""
+
+
+@dataclass(frozen=True)
+class CaptureExif:
+    format: str | None
+    make: str | None
+    model: str | None
+    orientation: int | None
+    datetime_original: str | None
+    subsec_time_original: str | None
+    offset_time_original: str | None
+
+
+def _text(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        value = value.decode("ascii", errors="replace")
+    text = str(value).strip().strip("\x00").strip()
+    return text or None
+
+
+def read_capture_exif(data: bytes) -> CaptureExif:
+    """Read the capture-related EXIF tags from JPEG or HEIC bytes."""
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            fmt = img.format
+            exif = img.getexif()
+    except (UnidentifiedImageError, OSError) as e:
+        raise InvalidImageError("File is not a readable image.") from e
+    except Image.DecompressionBombError as e:
+        raise InvalidImageError("Image dimensions are too large.") from e
+
+    sub = exif.get_ifd(ExifTags.IFD.Exif)
+    orientation = exif.get(_TAG_ORIENTATION)
+    return CaptureExif(
+        format=fmt,
+        make=_text(exif.get(_TAG_MAKE)),
+        model=_text(exif.get(_TAG_MODEL)),
+        orientation=orientation if isinstance(orientation, int) else None,
+        datetime_original=_text(sub.get(_TAG_DATETIME_ORIGINAL)),
+        subsec_time_original=_text(sub.get(_TAG_SUBSEC_TIME_ORIGINAL)),
+        offset_time_original=_text(sub.get(_TAG_OFFSET_TIME_ORIGINAL)),
+    )
+
+
+_SUBSEC = re.compile(r"[0-9]+")
+_OFFSET = re.compile(r"([+-])([0-9]{2}):([0-9]{2})")
+
+
+def _parse_subsec(subsec: str | None) -> int:
+    """'05' → 50_000 µs, a decimal fraction truncated to µs. Missing → 0 (whole seconds)."""
+    if subsec is None:
+        return 0
+    if not _SUBSEC.fullmatch(subsec):
+        raise InvalidTimestampError(f"Invalid SubSecTimeOriginal: {subsec!r}")
+    return int(subsec[:6].ljust(6, "0"))
+
+
+def _parse_offset(offset: str) -> timezone:
+    """'+02:00' → timezone(+2h). Real-world offsets are within ±14:00."""
+    match = _OFFSET.fullmatch(offset)
+    if not match:
+        raise InvalidTimestampError(f"Invalid OffsetTimeOriginal: {offset!r}")
+    sign, hours, minutes = match[1], int(match[2]), int(match[3])
+    if hours > 14 or minutes > 59:
+        raise InvalidTimestampError(f"Invalid OffsetTimeOriginal: {offset!r}")
+    delta = timedelta(hours=hours, minutes=minutes)
+    return timezone(delta if sign == "+" else -delta)
+
+
+def exif_capture_time(exif: CaptureExif) -> datetime:
+    """When the camera says the photo was taken, in UTC (the phone's clock).
+
+    Use `reference.reference_time` for the measurement's reference time.
+    """
+    if exif.datetime_original is None:
+        raise InvalidTimestampError(
+            "The photo has no capture timestamp. Screenshots, images from messaging "
+            "apps and edited exports can't be used; take the photo with the camera."
+        )
+    if exif.offset_time_original is None:
+        raise InvalidTimestampError("The photo's capture timestamp has no time zone offset.")
+
+    try:
+        local = datetime.strptime(exif.datetime_original, "%Y:%m:%d %H:%M:%S")
+    except ValueError as e:
+        raise InvalidTimestampError(f"Invalid DateTimeOriginal: {exif.datetime_original!r}") from e
+
+    local = local.replace(
+        microsecond=_parse_subsec(exif.subsec_time_original),
+        tzinfo=_parse_offset(exif.offset_time_original),
+    )
+    try:
+        return local.astimezone(UTC)
+    except OverflowError as e:  # e.g. year 1 with a positive offset
+        raise InvalidTimestampError(f"Invalid DateTimeOriginal: {exif.datetime_original!r}") from e

@@ -1,0 +1,43 @@
+[project]
+name = "watchtiming"
+version = "0.1.0"
+description = "Measure a mechanical watch's accuracy from dial photos"
+readme = "README.md"
+authors = [
+    { name = "Max Gotenstam" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.143.0",
+    "pillow>=12.3.0",
+    "pillow-heif>=1.8.1",
+    "python-multipart>=0.0.32",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+# Refuse packages published less than 3 days ago (protects against hijacked releases).
+# Mirrors pnpm's minimumReleaseAge. Don't lower or bypass it.
+exclude-newer = "3 days"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.1",
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+]

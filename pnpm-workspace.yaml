@@ -1,0 +1,9 @@
+packages:
+  - frontend
+
+# Refuse packages published less than 3 days ago (minutes).
+minimumReleaseAge: 4320
+
+# Only these packages may run install scripts. Ask before adding to this list.
+onlyBuiltDependencies:
+  - esbuild
