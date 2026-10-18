@@ -5,12 +5,8 @@ import pytest
 from PIL import Image
 
 from tests.helpers import capture, make_image
-from watchtiming.exif import (
-    InvalidImageError,
-    InvalidTimestampError,
-    exif_capture_time,
-    read_capture_exif,
-)
+from watchtiming.exif import InvalidTimestampError, exif_capture_time, read_capture_exif
+from watchtiming.imaging import InvalidImageError
 
 
 def test_full_tags_to_utc_with_subseconds():

@@ -3,26 +3,15 @@
 Pure functions: bytes in, values out. No file system, no framework code.
 """
 
-import io
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 
-import pillow_heif
-from PIL import ExifTags, Image, UnidentifiedImageError
+from PIL import ExifTags
 
-pillow_heif.register_heif_opener()
+from watchtiming.imaging import MALFORMED_IMAGE_ERRORS, InvalidImageError, open_image, read_exif
 
-_TAG_MAKE = 0x010F
-_TAG_MODEL = 0x0110
-_TAG_ORIENTATION = 0x0112
-_TAG_DATETIME_ORIGINAL = 0x9003
-_TAG_OFFSET_TIME_ORIGINAL = 0x9011
-_TAG_SUBSEC_TIME_ORIGINAL = 0x9291
-
-
-class InvalidImageError(ValueError):
-    """The bytes are not an image we can open."""
+_Tag = ExifTags.Base
 
 
 class InvalidTimestampError(ValueError):
@@ -51,25 +40,23 @@ def _text(value: object) -> str | None:
 
 def read_capture_exif(data: bytes) -> CaptureExif:
     """Read the capture-related EXIF tags from JPEG or HEIC bytes."""
+    with open_image(data) as img:
+        fmt = img.format
+        exif = read_exif(img)
     try:
-        with Image.open(io.BytesIO(data)) as img:
-            fmt = img.format
-            exif = img.getexif()
-    except (UnidentifiedImageError, OSError) as e:
-        raise InvalidImageError("File is not a readable image.") from e
-    except Image.DecompressionBombError as e:
-        raise InvalidImageError("Image dimensions are too large.") from e
+        sub = exif.get_ifd(ExifTags.IFD.Exif)  # parsed lazily, so malformed data fails here
+    except MALFORMED_IMAGE_ERRORS as e:
+        raise InvalidImageError("The image's metadata is unreadable.") from e
 
-    sub = exif.get_ifd(ExifTags.IFD.Exif)
-    orientation = exif.get(_TAG_ORIENTATION)
+    orientation = exif.get(_Tag.Orientation)
     return CaptureExif(
         format=fmt,
-        make=_text(exif.get(_TAG_MAKE)),
-        model=_text(exif.get(_TAG_MODEL)),
+        make=_text(exif.get(_Tag.Make)),
+        model=_text(exif.get(_Tag.Model)),
         orientation=orientation if isinstance(orientation, int) else None,
-        datetime_original=_text(sub.get(_TAG_DATETIME_ORIGINAL)),
-        subsec_time_original=_text(sub.get(_TAG_SUBSEC_TIME_ORIGINAL)),
-        offset_time_original=_text(sub.get(_TAG_OFFSET_TIME_ORIGINAL)),
+        datetime_original=_text(sub.get(_Tag.DateTimeOriginal)),
+        subsec_time_original=_text(sub.get(_Tag.SubsecTimeOriginal)),
+        offset_time_original=_text(sub.get(_Tag.OffsetTimeOriginal)),
     )
 
 

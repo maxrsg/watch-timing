@@ -5,7 +5,8 @@ from typing import Annotated
 from fastapi import FastAPI, Form, HTTPException, UploadFile
 from pydantic import BaseModel, PlainSerializer
 
-from watchtiming.exif import InvalidImageError, InvalidTimestampError, read_capture_exif
+from watchtiming.exif import InvalidTimestampError, read_capture_exif
+from watchtiming.imaging import InvalidImageError
 from watchtiming.limits import BodySizeLimit
 from watchtiming.reference import (
     FrameTiming,

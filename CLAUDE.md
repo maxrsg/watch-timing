@@ -4,7 +4,7 @@ An app for tracking a mechanical watch's accuracy over time. The user takes a ph
 
 ## Status
 
-Milestone 1 (scaffolding + EXIF spike) is in place: `backend/watchtiming/exif.py` + `POST /api/probe`, and a spike page in the frontend. The CV pipeline, persistence and the real app UI don't exist yet; `watchtiming.debug` is planned for milestone 2. Update this file when the stack, commands or structure change.
+Milestone 1 (scaffolding + capture timestamp spike) is done: `exif.py` + `reference.py` + `POST /api/probe`, and a spike page in the frontend. Milestone 2 (synthetic dials + debug CLI) is in place: `tests/synthetic/` renders dials with exact known angles, `dial.preprocess()` is pipeline step 1, and `watchtiming.debug` writes its output. Pipeline steps 2–9, persistence and the real app UI don't exist yet. Update this file when the stack, commands or structure change.
 
 **First task:** before building the CV pipeline, confirm that a photo taken through the PWA on a real iPhone and a real Android phone keeps `DateTimeOriginal`, `SubSecTimeOriginal` and `OffsetTimeOriginal`. Check this both when parsed in the browser and after upload. The design depends on it (see "Capture & timestamp"). **iPhone result:** `<input capture>` strips the timestamps; library picks keep them. Since in-app capture is required, the primary path is now a live in-app camera timestamped with the device clock (see "Capture & timestamp"). In-app camera timing verified on iPhone: constant ≈0.13 s lag, now corrected. Still to check: library byte match, installed PWA. Android: pending, no device available yet.
 
@@ -23,7 +23,8 @@ cd backend && uv sync
 uv run fastapi dev watchtiming/api.py
 uv run pytest
 uv run ruff check . && uv run ruff format .
-uv run python -m watchtiming.debug <image>   # dumps intermediate CV images
+uv run python -m watchtiming.debug <image>   # dumps intermediate CV images to debug-out/<name>/
+uv run python -m tests.synthetic.render 10:08:37 --tilt 25 -o dial.png   # render a synthetic dial
 
 # frontend
 cd frontend && pnpm install
@@ -45,14 +46,17 @@ backend/watchtiming/
   reference.py  # the reference time: EXIF or device clock + latency correction
   limits.py     # request body size limit (ASGI middleware)
   api.py        # FastAPI app
-  dial.py       # (planned) dial ellipse detection + perspective rectification
+  imaging.py    # decoding image bytes (HEIC opener, pixel limit), shared
+  dial.py       # preprocess (step 1); (planned) dial ellipse + perspective rectification
   hands.py      # (planned) polar unwrap + per-angle hand profiles + peaks
   reading.py    # (planned) hand angles → h:m:s + confidence
   accuracy.py   # (planned) deviation, regression rate, sessions
-  debug.py      # (planned) CLI that writes intermediate images
+  debug.py      # CLI that writes intermediate images (stages added as they land)
 backend/tests/
   helpers.py    # shared test helpers (make_image, capture)
-  synthetic/    # (planned) rendered dials with exact known times
+  synthetic/    # render.py: dials with exact known angles; scenarios.py: named variations;
+                # gallery.py: renders all scenarios + a contact sheet to debug-out/synthetic/
+  malformed/    # images with corrupt EXIF found by fuzzing (regression inputs)
   fixtures/     # (planned) real photos + known correct times
 frontend/src/
   index.css            # Tailwind import + design tokens (the single source of truth)
@@ -138,4 +142,4 @@ Precision target: about ±0.2s for the hand reading and about ±0.5s for the who
 - **Install scripts:** pnpm blocks dependency install scripts by default. Only packages listed in `onlyBuiltDependencies` in `pnpm-workspace.yaml` may run them (for example `esbuild`). Never add to that list or run `pnpm approve-builds` without asking.
 - **Release delay:** packages published in the last 3 days can't be installed (this protects against hijacked releases). Frontend: `minimumReleaseAge` in `pnpm-workspace.yaml`. Backend: `[tool.uv] exclude-newer = "3 days"` in `backend/pyproject.toml`. Don't lower or bypass either. If a resolve fails because a required version is too new, lower the version floor; don't override the window.
 - **Lockfiles:** commit `pnpm-lock.yaml` and `uv.lock`. In CI, install with `pnpm install --frozen-lockfile` and `uv sync --locked`.
-- **Version ranges:** pin exact versions for new dependencies (`pnpm add -E`). Check `pnpm audit` after dependency changes.
+- **Version ranges:** frontend: pin exact versions for new dependencies (`pnpm add -E`). Backend: `>=` floors in `pyproject.toml` (what `uv add` writes); the exact versions come from the committed `uv.lock`, within the release delay. Check `pnpm audit` after frontend dependency changes.
