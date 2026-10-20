@@ -2,7 +2,7 @@
 
 Track a mechanical watch's accuracy from photos of its dial. The app reads the time on the dial with classical computer vision, compares it to the moment the photo was taken (device clock for in-app photos, EXIF for library photos), and works out how many seconds per day the watch gains or loses.
 
-> **Status:** early. What exists today is the scaffolding plus a *capture timestamp check*: the in-app camera (timestamped with the device clock) and library picks (timestamped from EXIF), plus a reference clock page at `/#clock` for measuring the camera's timing error. Dial reading comes next.
+> **Status:** early. What exists today: the dial-reading pipeline and a **Read dial** page to try it. Take a photo in the app (or pick one), tap 12 o'clock, and see the reading, the detected hands drawn over the photo and the watch's deviation. Nothing is stored yet. Also: a capture timestamp check at `/#probe` and a reference clock at `/#clock`.
 
 ## Prerequisites
 
@@ -17,7 +17,7 @@ You need two terminals.
 # 1. Backend: FastAPI on http://localhost:8000
 cd backend
 uv sync
-uv run fastapi dev watchtiming/api.py
+uv run watchtiming-dev            # add --save-uploads to keep test photos for debugging
 ```
 
 ```bash

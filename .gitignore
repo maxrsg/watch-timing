@@ -12,3 +12,4 @@ frontend/dev-dist/
 notes/
 docs/
 debug-out/
+backend/tests/fixtures/local/

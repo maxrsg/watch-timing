@@ -64,6 +64,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Read
+         * @description Read the dial and compute the deviation from the capture time. Persists nothing (unless
+         *     the dev-only WATCHTIMING_SAVE_UPLOADS is set, see upload_log.py).
+         *
+         *     `tap_x`, `tap_y`: the 12 o'clock marker in the upright photo's pixels. The device fields are
+         *     as for /api/probe; `device_capture_time` should carry the phone's local UTC offset.
+         *
+         *     `hour_*`, `minute_*` (and optionally `second_*`): hand tips the user placed on the photo,
+         *     in the same pixels. When given, they're used instead of detecting the hands.
+         */
+        post: operations["read_api_read_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -76,6 +103,50 @@ export interface components {
             device_capture_time?: string | null;
             frame_timing?: components["schemas"]["FrameTiming"] | null;
             platform?: components["schemas"]["Platform"] | null;
+        };
+        /** Body_read_api_read_post */
+        Body_read_api_read_post: {
+            /** File */
+            file: string;
+            /** Tap X */
+            tap_x: number;
+            /** Tap Y */
+            tap_y: number;
+            /** Device Capture Time */
+            device_capture_time?: string | null;
+            frame_timing?: components["schemas"]["FrameTiming"] | null;
+            platform?: components["schemas"]["Platform"] | null;
+            /** Hour X */
+            hour_x?: number | null;
+            /** Hour Y */
+            hour_y?: number | null;
+            /** Minute X */
+            minute_x?: number | null;
+            /** Minute Y */
+            minute_y?: number | null;
+            /** Second X */
+            second_x?: number | null;
+            /** Second Y */
+            second_y?: number | null;
+        };
+        /** DialReadingOut */
+        DialReadingOut: {
+            /** Hours */
+            hours: number;
+            /** Minutes */
+            minutes: number;
+            /** Seconds */
+            seconds: number | null;
+            /** Confidence */
+            confidence: number;
+            /** Seconds Confidence */
+            seconds_confidence: number;
+            /** Needs Confirmation */
+            needs_confirmation: boolean;
+            /** Reasons */
+            reasons: string[];
+            /** Corrected */
+            corrected: boolean;
         };
         /** ExifTags */
         ExifTags: {
@@ -102,6 +173,39 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HandOverlay */
+        HandOverlay: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "hour" | "minute" | "second" | "other";
+            tip: components["schemas"]["PhotoPoint"];
+        };
+        /**
+         * Overlay
+         * @description The detected geometry, in the upright photo's pixels (the coordinates of the tap).
+         */
+        Overlay: {
+            dial_center: components["schemas"]["PhotoPoint"];
+            /** Dial Semi Major */
+            dial_semi_major: number;
+            /** Dial Semi Minor */
+            dial_semi_minor: number;
+            /** Dial Angle Deg */
+            dial_angle_deg: number;
+            pivot: components["schemas"]["PhotoPoint"];
+            twelve: components["schemas"]["PhotoPoint"];
+            /** Hands */
+            hands: components["schemas"]["HandOverlay"][];
+        };
+        /** PhotoPoint */
+        PhotoPoint: {
+            /** X */
+            x: number;
+            /** Y */
+            y: number;
         };
         /**
          * Platform
@@ -131,6 +235,28 @@ export interface components {
             ignored_device_time: boolean;
             /** Error */
             error: string | null;
+        };
+        /** ReadResult */
+        ReadResult: {
+            /** Image Width */
+            image_width: number;
+            /** Image Height */
+            image_height: number;
+            /** Reference Time Utc */
+            reference_time_utc: string | null;
+            /** Reference Utc Offset Minutes */
+            reference_utc_offset_minutes: number | null;
+            reference_source: components["schemas"]["ReferenceSource"] | null;
+            /** Latency Correction Ms */
+            latency_correction_ms: number | null;
+            /** Timestamp Error */
+            timestamp_error: string | null;
+            reading: components["schemas"]["DialReadingOut"] | null;
+            overlay: components["schemas"]["Overlay"] | null;
+            /** Reading Error */
+            reading_error: string | null;
+            /** Deviation S */
+            deviation_s: number | null;
         };
         /**
          * ReferenceSource
@@ -226,6 +352,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProbeResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_api_read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_read_api_read_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadResult"];
                 };
             };
             /** @description Validation Error */

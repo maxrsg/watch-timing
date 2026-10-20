@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Camera, CircleAlert, CircleCheck, Images, LoaderCircle } from 'lucide-react'
+import { Camera, CircleAlert, CircleCheck, LoaderCircle } from 'lucide-react'
 import { probe, type ProbeResult } from '@/api/client'
+import { LibraryButton } from '@/components/LibraryButton'
 import { LiveCamera } from '@/components/LiveCamera'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -50,33 +51,6 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <dt className="text-muted-foreground">{label}</dt>
       <dd className="tabular-nums">{children}</dd>
     </>
-  )
-}
-
-function LibraryButton({ disabled, onFile }: { disabled: boolean; onFile: (f: File) => void }) {
-  return (
-    // asChild puts `disabled` on a <label>, so style aria-disabled; focus lands on the hidden input.
-    <Button
-      asChild
-      size="touch"
-      variant="outline"
-      className="has-focus-visible:border-ring has-focus-visible:ring-3 has-focus-visible:ring-ring/50 aria-disabled:pointer-events-none aria-disabled:opacity-50"
-    >
-      <label aria-disabled={disabled}>
-        <Images /> Choose from library
-        <input
-          className="sr-only"
-          type="file"
-          accept="image/*"
-          disabled={disabled}
-          onChange={(e) => {
-            const file = e.target.files?.[0]
-            e.target.value = ''
-            if (file) onFile(file)
-          }}
-        />
-      </label>
-    </Button>
   )
 }
 

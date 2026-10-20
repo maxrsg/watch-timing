@@ -8,6 +8,20 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // If the app fails to start, show why instead of a blank page (useful on a phone, where
+      // there's no console). Classic script: runs even when the app's modules don't load.
+      window.__showStartupError = function (error) {
+        var root = document.getElementById('root')
+        if (!root || root.childElementCount > 0) return
+        var pre = document.createElement('pre')
+        pre.className = 'p-4 font-mono text-sm whitespace-pre-wrap text-destructive'
+        pre.textContent = 'The app failed to start:\n\n' + (error && (error.stack || error.message) || error)
+        root.appendChild(pre)
+      }
+      window.addEventListener('error', function (e) { window.__showStartupError(e.error || e.message) })
+      window.addEventListener('unhandledrejection', function (e) { window.__showStartupError(e.reason) })
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

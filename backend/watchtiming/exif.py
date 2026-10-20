@@ -85,6 +85,14 @@ def _parse_offset(offset: str) -> timezone:
     return timezone(delta if sign == "+" else -delta)
 
 
+def exif_timezone(exif: CaptureExif) -> timezone:
+    """The photo's local time zone (from OffsetTimeOriginal): the zone the phone, and most
+    likely the watch, was set to."""
+    if exif.offset_time_original is None:
+        raise InvalidTimestampError("The photo's capture timestamp has no time zone offset.")
+    return _parse_offset(exif.offset_time_original)
+
+
 def exif_capture_time(exif: CaptureExif) -> datetime:
     """When the camera says the photo was taken, in UTC (the phone's clock).
 

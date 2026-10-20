@@ -1,3 +1,4 @@
+import { toLocalIsoString } from '@/lib/format'
 import type { components } from './schema'
 
 export type ProbeResult = components['schemas']['ProbeResult']
@@ -5,6 +6,11 @@ export type ExifTags = components['schemas']['ExifTags']
 export type ServerTime = components['schemas']['ServerTime']
 export type FrameTiming = components['schemas']['FrameTiming']
 export type Platform = components['schemas']['Platform']
+export type ReadResult = components['schemas']['ReadResult']
+export type Overlay = components['schemas']['Overlay']
+export type DialReading = components['schemas']['DialReadingOut']
+
+export type DeviceCapture = { captureTime: Date; timing: FrameTiming; platform: Platform }
 
 async function errorMessage(res: Response): Promise<string> {
   try {
@@ -25,20 +31,51 @@ async function errorMessage(res: Response): Promise<string> {
  * time of the frame, which frame timestamp it is, and the platform. The server calibrates the
  * camera latency per (platform, timing).
  */
-export async function probe(
-  file: File,
-  device?: { captureTime: Date; timing: FrameTiming; platform: Platform },
-): Promise<ProbeResult> {
-  const form = new FormData()
-  form.append('file', file, file.name)
-  if (device) {
-    form.append('device_capture_time', device.captureTime.toISOString())
-    form.append('frame_timing', device.timing)
-    form.append('platform', device.platform)
-  }
+export async function probe(file: File, device?: DeviceCapture): Promise<ProbeResult> {
+  const form = uploadForm(file, device)
   const res = await fetch('/api/probe', { method: 'POST', body: form })
   if (!res.ok) throw new Error(await errorMessage(res))
   return res.json()
+}
+
+type Point = { x: number; y: number }
+
+/**
+ * Read the dial. `tap` is the 12 o'clock marker in the upright photo's pixels. With `hands`
+ * (tips the user placed, same pixels), the server uses them instead of detecting the hands.
+ */
+export async function readDial(
+  file: File,
+  tap: Point,
+  device?: DeviceCapture,
+  hands?: { hour: Point; minute: Point; second: Point | null },
+): Promise<ReadResult> {
+  const form = uploadForm(file, device)
+  form.append('tap_x', String(tap.x))
+  form.append('tap_y', String(tap.y))
+  if (hands) {
+    for (const role of ['hour', 'minute', 'second'] as const) {
+      const tip = hands[role]
+      if (!tip) continue
+      form.append(`${role}_x`, String(tip.x))
+      form.append(`${role}_y`, String(tip.y))
+    }
+  }
+  const res = await fetch('/api/read', { method: 'POST', body: form })
+  if (!res.ok) throw new Error(await errorMessage(res))
+  return res.json()
+}
+
+function uploadForm(file: File, device?: DeviceCapture): FormData {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  if (device) {
+    // Local time with its UTC offset: the dial shows local time, so the server needs the zone.
+    form.append('device_capture_time', toLocalIsoString(device.captureTime))
+    form.append('frame_timing', device.timing)
+    form.append('platform', device.platform)
+  }
+  return form
 }
 
 export async function getServerTime(): Promise<ServerTime> {

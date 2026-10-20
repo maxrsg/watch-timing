@@ -63,15 +63,15 @@ def orientation(exif: Image.Exif) -> int:
     return value if isinstance(value, int) and 1 <= value <= 8 else 1
 
 
-def upright_gray(img: Image.Image, image_orientation: int) -> Image.Image:
-    """Decode to grayscale and apply the orientation.
+def upright_rgb(img: Image.Image, image_orientation: int) -> Image.Image:
+    """Decode to RGB and apply the orientation.
 
     Transposes directly instead of using ImageOps.exif_transpose, which re-serializes the
     EXIF block and crashes on malformed metadata.
     """
     try:
-        gray = img.convert("L")
+        rgb = img.convert("RGB")
     except MALFORMED_IMAGE_ERRORS as e:
         raise InvalidImageError("File is not a readable image.") from e
     method = _UPRIGHT.get(image_orientation)
-    return gray.transpose(method) if method is not None else gray
+    return rgb.transpose(method) if method is not None else rgb

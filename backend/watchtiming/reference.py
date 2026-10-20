@@ -4,10 +4,10 @@ Single source of the reference time: a shutter-delay correction belongs here.
 """
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from enum import StrEnum
 
-from watchtiming.exif import CaptureExif, InvalidTimestampError, exif_capture_time
+from watchtiming.exif import CaptureExif, InvalidTimestampError, exif_capture_time, exif_timezone
 
 
 class FrameTiming(StrEnum):
@@ -58,19 +58,26 @@ class ReferenceSource(StrEnum):
 class DeviceCapture:
     """What the in-app camera sends instead of EXIF."""
 
-    time: datetime  # timezone-aware
+    time: datetime  # timezone-aware, in the phone's local zone (it carries the UTC offset)
     timing: FrameTiming
     platform: Platform
 
 
 @dataclass(frozen=True)
 class Reference:
-    time: datetime
+    time: datetime  # UTC
     source: ReferenceSource
+    # The phone's local time zone at capture. The dial shows local time, so AM/PM and the
+    # deviation are worked out in this zone.
+    timezone: tzinfo
     # Device clock only: the capture details, and the latency subtracted from the time
     # (None = no calibration for this platform and timing; the time is uncorrected).
     device: DeviceCapture | None = None
     latency_correction: timedelta | None = None
+
+    @property
+    def local_time(self) -> datetime:
+        return self.time.astimezone(self.timezone)
 
 
 def device_capture(
@@ -108,12 +115,19 @@ def reference_time(exif: CaptureExif, device: DeviceCapture | None, now: datetim
     `now` is the server time, for the plausibility check.
     """
     if exif.datetime_original is not None:
-        return Reference(_plausible_utc(exif_capture_time(exif), now), ReferenceSource.EXIF)
+        utc = _plausible_utc(exif_capture_time(exif), now)
+        return Reference(utc, ReferenceSource.EXIF, exif_timezone(exif))
     if device is not None:
         utc = _plausible_utc(device.time, now)
         latency = FRAME_LATENCY.get((device.platform, device.timing))
+        local_zone = device.time.tzinfo
+        assert local_zone is not None  # device_capture() rejects naive times
         return Reference(
-            utc - (latency or timedelta()), ReferenceSource.DEVICE_CLOCK, device, latency
+            utc - (latency or timedelta()),
+            ReferenceSource.DEVICE_CLOCK,
+            local_zone,
+            device,
+            latency,
         )
     raise InvalidTimestampError(
         "The photo has no capture timestamp. Use the in-app camera, or pick a photo taken "

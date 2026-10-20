@@ -14,7 +14,9 @@ export default defineConfig({
     basicSsl(),
     VitePWA({
       registerType: 'autoUpdate',
-      devOptions: { enabled: true },
+      // No service worker in dev: with the LAN dev server and its self-signed certificate it
+      // served stale files and left Safari on a blank page. Test the PWA with `pnpm build`.
+      devOptions: { enabled: false },
       manifest: {
         name: 'Watch Timing',
         short_name: 'Watch Timing',

@@ -7,6 +7,9 @@ error in seconds per scenario, not just pass/fail.
 
 from tests.synthetic.render import DialSpec
 
+# A red seconds hand on a black dial: clearly colored, but only ~18 gray levels above the dial.
+RED_ON_BLACK = (15, 15, 110)
+
 SCENARIOS: dict[str, DialSpec] = {
     "flat": DialSpec(),
     "rotated": DialSpec(rotation_deg=37),
@@ -27,6 +30,35 @@ SCENARIOS: dict[str, DialSpec] = {
     "overlap_hour_minute": DialSpec(hours=3, minutes=16, seconds=22),
     "overlap_minute_second": DialSpec(hours=7, minutes=41, seconds=41.5),
     "seconds_tail_on_hour": DialSpec(hours=9, minutes=0, seconds=15),
+    # Real-dial clutter (an Orient diver, 2026-10-18): the hour hand runs into the date window,
+    # lettering crosses the hands, wide luminous sword hands, a red seconds hand that is faint in
+    # gray with a big counterweight paddle.
+    "date_window": DialSpec(hours=3, minutes=1, seconds=3.5, dark_dial=True, date_window=True),
+    "dial_text": DialSpec(hours=10, minutes=58, seconds=2, dark_dial=True, dial_text=True),
+    "sword_hands": DialSpec(hours=2, minutes=23, seconds=37, dark_dial=True, sword_hands=True),
+    "colored_seconds": DialSpec(
+        hours=8,
+        minutes=20,
+        seconds=41,
+        dark_dial=True,
+        seconds_color=RED_ON_BLACK,
+        seconds_paddle=True,
+    ),
+    "orient_like": DialSpec(
+        hours=2,
+        minutes=8,
+        seconds=14,
+        tilt_deg=15,
+        tilt_axis_deg=60,
+        dark_dial=True,
+        date_window=True,
+        dial_text=True,
+        sword_hands=True,
+        seconds_color=RED_ON_BLACK,
+        seconds_paddle=True,
+        noise_sigma=4,
+        seed=3,
+    ),
     "everything": DialSpec(
         hours=4,
         minutes=41,
