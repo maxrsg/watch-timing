@@ -8,6 +8,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from watchtiming.geometry import angle_diff, wrap
 from watchtiming.hands import HandCandidate
@@ -69,7 +70,9 @@ class UnreadableDialError(ValueError):
     """No consistent set of hands was found."""
 
 
-@dataclass(frozen=True)
+# Keyword-only: several fields are floats in different units (seconds, minutes, degrees), so a
+# positional call could swap them without any type error.
+@dataclass(frozen=True, kw_only=True)
 class Assignment:
     hour: HandCandidate
     minute: HandCandidate
@@ -180,8 +183,16 @@ def _shape_cost(h: HandCandidate, m: HandCandidate, s: HandCandidate | None) -> 
     return cost
 
 
-def _residuals(h: float, m: float, s: float | None) -> tuple[float, float | None]:
-    return hour_residual_min(h, m), (None if s is None else minute_residual_s(m, s))
+class _Residuals(NamedTuple):
+    hour_min: float
+    minute_s: float | None
+
+
+def _residuals(h: float, m: float, s: float | None) -> _Residuals:
+    return _Residuals(
+        hour_min=hour_residual_min(h, m),
+        minute_s=None if s is None else minute_residual_s(m, s),
+    )
 
 
 def _tail_of(s: HandCandidate, others: list[HandCandidate]) -> HandCandidate | None:
@@ -224,7 +235,7 @@ def _evaluate(
     s_angle = (
         None if s is None else (s.angle if second_override_deg is None else second_override_deg)
     )
-    hr, mr = _residuals(h.angle, m_angle, s_angle)
+    hr, mr = _residuals(h.angle, m_angle, s_angle)  # hour (min), minute (s)
 
     rotation = 0.0
     if twelve_uncertainty_deg > 0:
@@ -248,7 +259,8 @@ def _evaluate(
     if tail is not None:
         cost -= TAIL_BONUS
     return Assignment(
-        h, m, s, rotation, mr, hr, cost,
+        hour=h, minute=m, second=s, rotation_deg=rotation,
+        minute_residual_s=mr, hour_residual_min=hr, cost=cost,
         seconds_shared=seconds_shared,
         hour_minute_shared=hour_minute_shared,
         tail=tail,
