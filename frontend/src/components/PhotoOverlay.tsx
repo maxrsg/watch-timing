@@ -1,24 +1,19 @@
 import { useState } from 'react'
-import type { Overlay } from '@/api/client'
+import type { HandRole, HandTips, Overlay, OverlayRole, PhotoPoint } from '@/api/client'
 import { cn } from '@/lib/utils'
 
-export type PhotoPoint = { x: number; y: number }
-export type HandRole = 'hour' | 'minute' | 'second'
-/** Hand tips the user is placing, in photo pixels. `second: null` = no seconds hand. */
-export type HandTips = { hour: PhotoPoint; minute: PhotoPoint; second: PhotoPoint | null }
-
-const HAND_CLASS = {
+const HAND_CLASS: Record<OverlayRole, string> = {
   hour: 'stroke-overlay-hour stroke-4',
   minute: 'stroke-overlay-minute stroke-3',
   second: 'stroke-overlay-second stroke-2',
   other: 'stroke-muted-foreground stroke-1',
-} as const
+}
 
-const HANDLE_CLASS = {
+const HANDLE_CLASS: Record<HandRole, string> = {
   hour: 'fill-overlay-hour',
   minute: 'fill-overlay-minute',
   second: 'fill-overlay-second',
-} as const
+}
 
 const ROLES: HandRole[] = ['hour', 'minute', 'second']
 

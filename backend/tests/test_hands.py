@@ -6,9 +6,12 @@ import pytest
 from tests.synthetic.render import DialSpec, render
 from tests.synthetic.scenarios import SCENARIOS
 from tests.synthetic.truth import wrap
-from watchtiming.dial import apply_homography, find_dial, rectify
-from watchtiming.hands import find_pivot, measure_hands, refine_twelve, unwrap
+from watchtiming.dial import find_dial, rectify
+from watchtiming.geometry import apply_homography
+from watchtiming.markers import refine_twelve
 from watchtiming.pipeline import read_dial
+from watchtiming.polar import unwrap
+from watchtiming.segments import find_pivot, line_segments, measure_hands
 
 # Hands that should be found as separate candidates (no overlaps in these scenarios).
 SEPARATE = [n for n in SCENARIOS if "overlap" not in n]
@@ -30,12 +33,12 @@ def test_unwrap_rows_are_clock_angles():
 
 @pytest.mark.parametrize("name", SEPARATE)
 def test_pivot(name):
-    """Found from the hand lines, starting from a rough (affine-only) rectification: a
-    homography keeps the hands straight lines through the pivot."""
+    """Where the hands' centerlines meet: a homography keeps the hands straight lines through
+    the pivot."""
     dial = render(SCENARIOS[name])
     reading = read_dial(dial.image, dial.truth.twelve, dial.color)
-    true = apply_homography(reading.rectified.homography, dial.truth.pivot)
-    found = reading.pivot.pivot
+    true = apply_homography(reading.geometry.rectified.homography, dial.truth.pivot)
+    found = reading.geometry.pivot.pivot
     error = math.hypot(found[0] - true[0], found[1] - true[1])
     limit = 6.0 if name == "everything" else 2.5  # noise + glare + blur + tilt combined
     assert error < limit, f"pivot {error:.2f} px off"
@@ -43,7 +46,8 @@ def test_pivot(name):
 
 def test_parallel_hands_are_flagged():
     dial, rect = rectified(SCENARIOS["overlap_all"])
-    assert not find_pivot(rect.image, rect.center, rect.radius).well_determined
+    segs = line_segments(rect.image)
+    assert not find_pivot(rect.image, rect.center, rect.radius, segs).well_determined
 
 
 @pytest.mark.parametrize("name", ["flat", "tilt_strong", "dark_dial", "glare", "noise"])
@@ -51,7 +55,7 @@ def test_hand_candidates_have_true_angles_and_shapes(name):
     spec = SCENARIOS[name]
     dial, rect = rectified(spec)
     pivot = apply_homography(rect.homography, dial.truth.pivot)
-    hands = [c for c in measure_hands(rect.image, rect.center, pivot, rect.radius) if not c.is_tail]
+    hands = [c for c in measure_hands(rect.image, pivot, rect.radius) if not c.is_tail]
     assert len(hands) == 3
     a = dial.truth.angles
     by_truth = {}

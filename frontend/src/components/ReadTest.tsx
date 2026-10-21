@@ -1,50 +1,27 @@
 import { useEffect, useState } from 'react'
-import { Camera, Check, CircleAlert, LoaderCircle, Move, RotateCcw, X } from 'lucide-react'
-import { type DeviceCapture, type Overlay, type ReadResult, readDial } from '@/api/client'
-import { LibraryButton } from '@/components/LibraryButton'
-import { LiveCamera } from '@/components/LiveCamera'
-import { type HandRole, type HandTips, type PhotoPoint, PhotoOverlay } from '@/components/PhotoOverlay'
+import { Check, CircleAlert, LoaderCircle, Move, RotateCcw, X } from 'lucide-react'
+import { type DeviceCapture, type HandTips, type PhotoPoint, type ReadResult, readDial } from '@/api/client'
+import { CapturePicker } from '@/components/CapturePicker'
+import { DefinitionRow } from '@/components/DefinitionRow'
+import { PhotoOverlay } from '@/components/PhotoOverlay'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { errorText, formatDialTime, formatSignedSeconds, formatWallTime } from '@/lib/format'
-import type { CapturedFrame } from '@/lib/frame'
-import { detectPlatform } from '@/lib/platform'
+import { type CapturedFrame, frameDevice, frameToFile } from '@/lib/frame'
+import { initialTip, initialTips } from '@/lib/hands'
 import { cn } from '@/lib/utils'
 
 type Photo = { file: File; url: string; device?: DeviceCapture }
 
-// Where a hand's handle starts when the server found no such hand: clock angle and length as a
-// fraction of the dial ring (a rough guess; the user drags it into place).
-const DEFAULT_TIP: Record<HandRole, [number, number]> = {
-  hour: [300, 0.45],
-  minute: [60, 0.75],
-  second: [180, 0.8],
-}
-
-/** Start the handles at the detected hands, or at defaults for hands that weren't found. */
-function initialTips(overlay: Overlay): HandTips {
-  const found = (role: HandRole) => overlay.hands.find((h) => h.role === role)?.tip
-  const fallback = (role: HandRole): PhotoPoint => {
-    const [angle, length] = DEFAULT_TIP[role]
-    const a = (angle * Math.PI) / 180
-    const r = length * overlay.dial_semi_major
-    return { x: overlay.pivot.x + r * Math.sin(a), y: overlay.pivot.y - r * Math.cos(a) }
+/** What to tell the user to do next. */
+function instruction(photo: Photo | null, result: ReadResult | null, correcting: boolean): string {
+  if (correcting) {
+    return 'Drag each colored dot onto its hand (anywhere along it; only the direction counts). Zoom in for the seconds.'
   }
-  return {
-    hour: found('hour') ?? fallback('hour'),
-    minute: found('minute') ?? fallback('minute'),
-    second: found('second') ?? fallback('second'),
-  }
-}
-
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <>
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="tabular-nums">{children}</dd>
-    </>
-  )
+  if (!photo) return "Take a photo of the watch, filling most of the frame, then tap 12 o'clock."
+  if (!result) return "Tap the 12 o'clock marker on the photo."
+  return "Tap 12 o'clock again to re-read, correct the hands, or take a new photo."
 }
 
 function Result({ result }: { result: ReadResult }) {
@@ -85,17 +62,17 @@ function Result({ result }: { result: ReadResult }) {
 
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
           {result.reference_time_utc && result.reference_utc_offset_minutes !== null && (
-            <Row label="Photo taken">
+            <DefinitionRow label="Photo taken">
               {formatWallTime(Date.parse(result.reference_time_utc), result.reference_utc_offset_minutes)}{' '}
               <span className="text-muted-foreground">
                 ({result.reference_source === 'exif' ? 'photo EXIF' : 'phone clock'})
               </span>
-            </Row>
+            </DefinitionRow>
           )}
           {r && (
-            <Row label="Confidence">
+            <DefinitionRow label="Confidence">
               {Math.round(r.confidence * 100)} %, seconds {Math.round(r.seconds_confidence * 100)} %
-            </Row>
+            </DefinitionRow>
           )}
         </dl>
 
@@ -120,7 +97,6 @@ function Result({ result }: { result: ReadResult }) {
 
 /** Take or pick a photo, tap 12 o'clock, and see what the backend reads. Persists nothing. */
 export function ReadTest() {
-  const [cameraOpen, setCameraOpen] = useState(false)
   const [photo, setPhoto] = useState<Photo | null>(null)
   const [tap, setTap] = useState<PhotoPoint | null>(null)
   const [busy, setBusy] = useState(false)
@@ -135,20 +111,21 @@ export function ReadTest() {
     return () => URL.revokeObjectURL(url)
   }, [url])
 
-  function start(file: File, device?: DeviceCapture) {
-    setPhoto({ file, url: URL.createObjectURL(file), device })
-    setCameraOpen(false)
+  /** Back to the start, with a new photo or none. */
+  function reset(next: Photo | null = null) {
+    setPhoto(next)
     setTap(null)
     setResult(null)
     setError(null)
     setTips(null)
   }
 
+  function start(file: File, device?: DeviceCapture) {
+    reset({ file, url: URL.createObjectURL(file), device })
+  }
+
   function fromFrame(frame: CapturedFrame) {
-    const file = new File([frame.blob], `frame-${frame.captureTime.getTime()}.jpg`, {
-      type: frame.blob.type,
-    })
-    start(file, { captureTime: frame.captureTime, timing: frame.timing, platform: detectPlatform() })
+    start(frameToFile(frame), frameDevice(frame))
   }
 
   async function read(point: PhotoPoint, hands?: HandTips) {
@@ -166,49 +143,24 @@ export function ReadTest() {
     }
   }
 
-  function reset() {
-    setPhoto(null)
-    setTap(null)
-    setResult(null)
-    setError(null)
-    setTips(null)
-  }
-
-  const canCorrect = Boolean(result?.overlay && tap)
+  // The overlay the hands are placed on: the dial was found (with or without a reading).
+  const overlay = result?.overlay ?? null
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
       <header className="flex flex-col gap-1">
         <h1 className="font-heading text-2xl font-semibold">Read the dial</h1>
-        <p className="text-sm text-muted-foreground">
-          {tips
-            ? 'Drag each colored dot onto its hand (anywhere along it; only the direction counts). Zoom in for the seconds.'
-            : photo
-              ? result
-                ? 'Tap 12 o\'clock again to re-read, correct the hands, or take a new photo.'
-                : 'Tap the 12 o\'clock marker on the photo.'
-              : 'Take a photo of the watch, filling most of the frame, then tap 12 o\'clock.'}
-        </p>
+        <p className="text-sm text-muted-foreground">{instruction(photo, result, tips !== null)}</p>
       </header>
 
-      {!photo &&
-        (cameraOpen ? (
-          <LiveCamera disabled={false} onClose={() => setCameraOpen(false)} onCapture={fromFrame} />
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            <Button size="touch" onClick={() => setCameraOpen(true)}>
-              <Camera /> Open camera
-            </Button>
-            <LibraryButton disabled={false} onFile={(f) => start(f)} />
-          </div>
-        ))}
+      {!photo && <CapturePicker onFrame={fromFrame} onFile={(f) => start(f)} />}
 
       {photo && (
         <>
           <PhotoOverlay
             src={photo.url}
             tap={tap}
-            overlay={result?.overlay ?? null}
+            overlay={overlay}
             onTap={(point) => void read(point)}
             tips={tips}
             onMoveTip={(role, point) => setTips((t) => (t ? { ...t, [role]: point } : t))}
@@ -222,9 +174,10 @@ export function ReadTest() {
                 size="touch"
                 variant="outline"
                 onClick={() =>
-                  setTips((t) =>
-                    t && (t.second ? { ...t, second: null } : { ...t, second: initialTips(result!.overlay!).second }),
-                  )
+                  setTips((t) => {
+                    if (!t || !overlay) return t
+                    return { ...t, second: t.second ? null : initialTip(overlay, 'second') }
+                  })
                 }
               >
                 {tips.second ? 'No seconds hand' : 'Add seconds hand'}
@@ -243,18 +196,18 @@ export function ReadTest() {
           {result && !busy && !tips && (
             <>
               <Result result={result} />
-              {canCorrect && (
+              {overlay && tap && (
                 <Button
                   size="touch"
                   variant={result.reading?.needs_confirmation || !result.reading ? 'default' : 'outline'}
-                  onClick={() => setTips(initialTips(result.overlay!))}
+                  onClick={() => setTips(initialTips(overlay))}
                 >
                   <Move /> {result.reading ? 'Correct the hands' : 'Place the hands yourself'}
                 </Button>
               )}
             </>
           )}
-          <Button size="touch" variant="outline" onClick={reset} disabled={busy}>
+          <Button size="touch" variant="outline" onClick={() => reset()} disabled={busy}>
             <RotateCcw /> New photo
           </Button>
         </>

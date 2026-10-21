@@ -1,14 +1,24 @@
-"""Dial detection. Step 1 so far: preprocessing (orientation, grayscale, downscale).
+"""Steps 1–2 of the pipeline: preprocessing (orientation, grayscale, downscale), the dial's
+concentric rings, and the ring-based perspective rectification.
 
 Pure functions: image in, result out. No file system, no framework code.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
 import numpy.typing as npt
 
+from watchtiming.geometry import (
+    ColorImage,
+    GrayImage,
+    Matrix,
+    Point,
+    apply_homography,
+    clock_angle,
+)
 from watchtiming.imaging import (
     TRANSPOSED_ORIENTATIONS,
     open_image,
@@ -20,9 +30,6 @@ from watchtiming.imaging import (
 # Long side of the image the CV pipeline works on. Enough for ±0.2 s seconds-hand precision
 # on a dial that fills a good part of the frame, and keeps every stage fast.
 PROCESS_LONG_SIDE = 1000
-
-GrayImage = npt.NDArray[np.uint8]
-ColorImage = npt.NDArray[np.uint8]  # BGR (OpenCV's channel order)
 
 
 @dataclass(frozen=True)
@@ -63,9 +70,6 @@ def preprocess(data: bytes, long_side: int = PROCESS_LONG_SIDE) -> Preprocessed:
 
 # --- Step 2: dial edge as an ellipse ---------------------------------------------------------
 
-Point = tuple[float, float]
-Matrix = npt.NDArray[np.float64]
-
 # Minor/major axis ratio: below this the dial is tilted more than ~65° and unreadable anyway.
 MIN_AXIS_RATIO = 0.4
 # The rough circle (Hough) must have a radius of at least this fraction of the image's short
@@ -80,6 +84,21 @@ RING_RANGE = (0.4, 1.5)
 RING_INLIER_BAND = 0.006
 MIN_RING_COVERAGE = 0.55
 MIN_RING_POINTS = 60
+# The seed shape (`_seed_shape`): edge radii between these multiples of the rough circle's, in
+# sectors of SEED_SECTOR_DEG, the SEED_PEAKS strongest 1-px radii per sector that have at least
+# SEED_MIN_VOTES edge points; at least SEED_MIN_CANDIDATES candidates overall, and a RANSAC
+# inlier band of SEED_BAND (normalized radius) over them.
+SEED_RANGE = (0.6, 1.4)
+SEED_SECTOR_DEG = 5
+SEED_PEAKS = 3
+SEED_MIN_VOTES = 3
+SEED_MIN_CANDIDATES = 12
+SEED_BAND = 0.015
+# Rings of one dial share the seed shape's center (within this fraction of its semi-major
+# axis) and axis ratio (within this); two rings whose sizes differ less than RING_SAME are one.
+CONCENTRIC_SHIFT = 0.03
+CONCENTRIC_RATIO = 0.03
+RING_SAME = 0.01
 
 
 class DialNotFoundError(ValueError):
@@ -167,6 +186,31 @@ def _robust_ellipse(
     return ellipse
 
 
+def ransac_ellipse(
+    pool: npt.NDArray[np.float64],
+    sample: Callable[[np.random.Generator], npt.NDArray[np.intp]],
+    accept: Callable[[Ellipse], bool],
+    band: float,
+    iterations: int,
+) -> tuple[Ellipse | None, int]:
+    """The ellipse through the most points of `pool` (within `band` of normalized radius 1):
+    fitted to `sample(rng)` indices each round, skipping ellipses `accept` rejects. Returns the
+    best and its inlier count. Deterministic: the random sampling is seeded."""
+    rng = np.random.default_rng(0)
+    best, best_count = None, 0
+    for _ in range(iterations):
+        try:
+            e = Ellipse.from_cv(cv2.fitEllipse(pool[sample(rng)].astype(np.float32)))
+        except cv2.error:
+            continue
+        if not accept(e):
+            continue
+        count = int((np.abs(e.normalized_radius(pool) - 1) < band).sum())
+        if count > best_count:
+            best, best_count = e, count
+    return best, best_count
+
+
 def _rough_circle(gray: GrayImage, tap: Point) -> tuple[Point, float] | None:
     """Median of the strongest Hough circles that have the tap inside: a rough dial center and
     radius. Robust to the many concentric edges of a real watch."""
@@ -190,41 +234,40 @@ def _rough_circle(gray: GrayImage, tap: Point) -> tuple[Point, float] | None:
 def _seed_shape(
     points: npt.NDArray[np.float64], center: Point, r0: float, iterations: int = 400
 ) -> Ellipse | None:
-    """One ring's ellipse, robustly: in every 5° sector the strongest edge radii around the rough
+    """One ring's ellipse, robustly: in every sector the strongest edge radii around the rough
     center, then RANSAC over those few candidates (most sectors agree on the dominant ring).
     Deterministic: the random sampling is seeded."""
     d = points - center
     r = np.hypot(d[:, 0], d[:, 1])
-    theta = np.degrees(np.arctan2(d[:, 1], d[:, 0])) % 360
-    in_band = (r > 0.6 * r0) & (r < 1.4 * r0)
+    theta = np.degrees(np.arctan2(d[:, 1], d[:, 0])) % 360  # math angle: only bins sectors
+    lo, hi = SEED_RANGE[0] * r0, SEED_RANGE[1] * r0
+    in_band = (r > lo) & (r < hi)
     candidates = []
-    for sector in range(0, 360, 5):
-        mask = in_band & (theta >= sector) & (theta < sector + 5)
-        if mask.sum() < 3:
+    for sector in range(0, 360, SEED_SECTOR_DEG):
+        mask = in_band & (theta >= sector) & (theta < sector + SEED_SECTOR_DEG)
+        if mask.sum() < SEED_MIN_VOTES:
             continue
-        hist, edges = np.histogram(r[mask], bins=np.arange(0.6 * r0, 1.4 * r0, 1.0))
-        for i in np.argsort(hist)[::-1][:3]:  # strongest three radii in this sector
-            if hist[i] < 3:
+        hist, edges = np.histogram(r[mask], bins=np.arange(lo, hi, 1.0))
+        for i in np.argsort(hist)[::-1][:SEED_PEAKS]:
+            if hist[i] < SEED_MIN_VOTES:
                 break
             rho = (edges[i] + edges[i + 1]) / 2
-            a = np.radians(sector + 2.5)
+            a = np.radians(sector + SEED_SECTOR_DEG / 2)
             candidates.append((center[0] + rho * np.cos(a), center[1] + rho * np.sin(a)))
-    if len(candidates) < 12:
+    if len(candidates) < SEED_MIN_CANDIDATES:
         return None
     pool = np.array(candidates, np.float64)
-    rng = np.random.default_rng(0)
-    best, best_count = None, 0
-    for _ in range(iterations):
-        sample = pool[rng.choice(len(pool), 5, replace=False)]
-        try:
-            e = Ellipse.from_cv(cv2.fitEllipse(sample.astype(np.float32)))
-        except cv2.error:
-            continue
-        if not (0.5 * r0 < e.semi_major < 1.5 * r0) or e.semi_minor / e.semi_major < MIN_AXIS_RATIO:
-            continue
-        count = int((np.abs(e.normalized_radius(pool) - 1) < 0.015).sum())
-        if count > best_count:
-            best, best_count = e, count
+
+    def plausible(e: Ellipse) -> bool:
+        return 0.5 * r0 < e.semi_major < 1.5 * r0 and e.semi_minor / e.semi_major >= MIN_AXIS_RATIO
+
+    best, _ = ransac_ellipse(
+        pool,
+        lambda rng: rng.choice(len(pool), 5, replace=False),
+        plausible,
+        band=SEED_BAND,
+        iterations=iterations,
+    )
     if best is None:
         return None
     return _robust_ellipse(points, band=0.02, start=best)
@@ -276,11 +319,11 @@ def _concentric(e: Ellipse, shape: Ellipse) -> bool:
     """Same center and the same tilt (axis ratio) as the shape: a ring of the same dial."""
     offset = np.hypot(e.center[0] - shape.center[0], e.center[1] - shape.center[1])
     ratio = (e.semi_minor / e.semi_major) - (shape.semi_minor / shape.semi_major)
-    return offset < 0.03 * shape.semi_major and abs(ratio) < 0.03
+    return offset < CONCENTRIC_SHIFT * shape.semi_major and abs(ratio) < CONCENTRIC_RATIO
 
 
 def _same_ring(a: Ellipse, b: Ellipse) -> bool:
-    return abs(a.semi_major / b.semi_major - 1) < 0.01
+    return abs(a.semi_major / b.semi_major - 1) < RING_SAME
 
 
 def find_dial(gray: GrayImage, tap: Point) -> Ellipse:
@@ -317,16 +360,6 @@ class Rectified:
 
     def to_photo(self, point: Point) -> Point:
         return apply_homography(np.linalg.inv(self.homography), point)
-
-
-def apply_homography(h: Matrix, point: Point) -> Point:
-    x, y, w = h @ np.array([point[0], point[1], 1.0])
-    return float(x / w), float(y / w)
-
-
-def _clock_angle(vector: npt.NDArray[np.float64]) -> float:
-    """Radians, clockwise from 12 o'clock, for a vector in image coordinates (y down)."""
-    return float(np.arctan2(vector[0], -vector[1]))
 
 
 def _rotate_clockwise(angle: float) -> Matrix:
@@ -374,8 +407,8 @@ def rectifying_homography(
 
     to_circle = affine @ projective @ norm
     # Rotate so the tapped 12 o'clock is straight up.
-    tap_r = np.array(apply_homography(to_circle, tap))
-    h = _rotate_clockwise(-_clock_angle(tap_r)) @ to_circle
+    tap_r = apply_homography(to_circle, tap)
+    h = _rotate_clockwise(-np.radians(clock_angle(*tap_r))) @ to_circle
     h = h / h[2, 2]
     miss = float(np.hypot(*apply_homography(h, center)))
     return h, miss

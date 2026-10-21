@@ -109,7 +109,7 @@ def test_uploads_are_kept_only_when_enabled(tmp_path, monkeypatch):
 
 def tip(angle_deg: float, fraction: float) -> dict[str, float]:
     from tests.synthetic.truth import dial_point
-    from watchtiming.dial import apply_homography
+    from watchtiming.geometry import apply_homography
 
     x, y = apply_homography(DIAL.truth.homography, dial_point(SPEC, angle_deg, fraction))
     return {"x": x, "y": y}
@@ -158,3 +158,29 @@ def test_a_misplaced_hand_is_warned_about():
 
 def test_partial_hand_tips_are_rejected():
     assert post(photo(None), hour_x=10, hour_y=10).status_code == 422
+
+
+def test_kept_uploads_record_the_placed_hands(tmp_path, monkeypatch):
+    """A kept upload replays what the app was sent: the hand tips are in the request, and the
+    debug stages show the placed reading, not a fresh detection."""
+    import json
+
+    monkeypatch.setenv("WATCHTIMING_SAVE_UPLOADS", str(tmp_path))
+    a = DIAL.truth.angles
+    fields = hand_fields(tip(a.hour, 0.3), tip(a.minute, 0.75), tip(a.second, 0.5))
+    post(photo("2026:10:18 10:08:34", "5"), **fields)
+    (folder,) = tmp_path.iterdir()
+    request = json.loads((folder / "request.json").read_text())
+    assert request["hand_tips"]["hour"] == pytest.approx([fields["hour_x"], fields["hour_y"]])
+    info = (folder / "info.txt").read_text()
+    assert "hands placed by the user" in info
+    assert "deviation: +2.50 s" in info
+
+
+def test_the_api_does_not_load_the_debug_tools():
+    import subprocess
+    import sys
+
+    code = "import sys, watchtiming.api; print('watchtiming.debug' in sys.modules)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False"

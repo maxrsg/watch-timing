@@ -1,11 +1,15 @@
-"""Ground-truth helpers for comparing pipeline results with a rendered dial."""
+"""Ground-truth helpers for comparing pipeline results with a rendered dial.
+
+The clock-angle convention (sin, −cos) is written out here and in render.py on purpose instead
+of importing watchtiming.geometry: the ground truth stays an independent check of it.
+"""
 
 import math
 
 import numpy as np
 
 from tests.synthetic.render import DialSpec, RenderedDial
-from watchtiming.dial import Point, apply_homography
+from watchtiming.geometry import Point, apply_homography
 
 
 def wrap(value: float, period: float) -> float:

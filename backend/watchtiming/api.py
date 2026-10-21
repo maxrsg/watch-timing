@@ -1,24 +1,21 @@
 import hashlib
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile
 from pydantic import BaseModel, PlainSerializer
 from starlette.concurrency import run_in_threadpool
 
-from watchtiming.dial import DialNotFoundError, preprocess
+from watchtiming.dial import preprocess
 from watchtiming.exif import CaptureExif, InvalidTimestampError, read_capture_exif
+from watchtiming.geometry import Point
 from watchtiming.imaging import InvalidImageError
 from watchtiming.limits import BodySizeLimit
-from watchtiming.pipeline import (
-    HandsNotFoundError,
-    locate_dial,
-    photo_overlay,
-    read_dial,
-    read_with_hands,
-)
-from watchtiming.reading import UnreadableDialError, deviation_seconds
+from watchtiming.measure import HandTips, Measurement, measure
+from watchtiming.pipeline import OverlayGeometry
 from watchtiming.reference import (
+    DeviceCapture,
     FrameTiming,
     Platform,
     Reference,
@@ -132,7 +129,12 @@ async def _read_upload(file: UploadFile) -> tuple[bytes, CaptureExif]:
         raise HTTPException(422, str(e)) from e
 
 
-def _reference(exif, device_capture_time, frame_timing, platform):
+def _reference(
+    exif: CaptureExif,
+    device_capture_time: datetime | None,
+    frame_timing: FrameTiming | None,
+    platform: Platform | None,
+) -> tuple[Reference | None, DeviceCapture | None, str | None]:
     """(reference, device capture, error message)."""
     device = None
     try:
@@ -199,11 +201,11 @@ async def probe(
     )
 
 
-def _point(p: tuple[float, float]) -> PhotoPoint:
+def _point(p: Point) -> PhotoPoint:
     return PhotoPoint(x=p[0], y=p[1])
 
 
-def _overlay(o) -> Overlay:
+def _overlay(o: OverlayGeometry) -> Overlay:
     return Overlay(
         dial_center=_point(o.dial_center),
         dial_semi_major=o.dial_axes[0],
@@ -215,19 +217,41 @@ def _overlay(o) -> Overlay:
     )
 
 
-def _hand_tips(scale: float, *coords: float | None):
-    """User-placed tips (photo pixels → processed): (hour, minute, second or None), or None
-    when no hands were placed. Hour and minute are required together; seconds are optional."""
-    hx, hy, mx, my, sx, sy = coords
+def _hand_tips(
+    hour_x: Annotated[float | None, Form()] = None,
+    hour_y: Annotated[float | None, Form()] = None,
+    minute_x: Annotated[float | None, Form()] = None,
+    minute_y: Annotated[float | None, Form()] = None,
+    second_x: Annotated[float | None, Form()] = None,
+    second_y: Annotated[float | None, Form()] = None,
+) -> HandTips | None:
+    """Hand tips the user placed on the photo, or None when none were sent. Hour and minute are
+    required together; seconds are optional."""
+    coords = (hour_x, hour_y, minute_x, minute_y, second_x, second_y)
     if all(c is None for c in coords):
         return None
-    if None in (hx, hy, mx, my) or (sx is None) != (sy is None):
+    if (
+        hour_x is None
+        or hour_y is None
+        or minute_x is None
+        or minute_y is None
+        or (second_x is None) != (second_y is None)
+    ):
         raise HTTPException(422, "Send the hour and minute hand tips (and optionally seconds).")
+    second = (second_x, second_y) if second_x is not None and second_y is not None else None
+    return HandTips((hour_x, hour_y), (minute_x, minute_y), second)
 
-    def tip(x, y):
-        return (x * scale, y * scale)
 
-    return tip(hx, hy), tip(mx, my), (tip(sx, sy) if sx is not None else None)
+def _reading_out(m: Measurement) -> DialReadingOut | None:
+    if m.reading is None:
+        return None
+    t, c = m.reading.time, m.reading.confidence
+    return DialReadingOut(
+        hours=t.dial_hours, minutes=t.minutes, seconds=t.seconds,
+        confidence=c.overall, seconds_confidence=c.seconds,
+        needs_confirmation=m.reading.needs_confirmation,
+        reasons=list(c.reasons), corrected=m.reading.corrected,
+    )  # fmt: skip
 
 
 @app.post("/api/read")
@@ -235,15 +259,11 @@ async def read(
     file: UploadFile,
     tap_x: Annotated[float, Form()],
     tap_y: Annotated[float, Form()],
+    tips: Annotated[HandTips | None, Depends(_hand_tips)],
     device_capture_time: Annotated[datetime | None, Form()] = None,
     frame_timing: Annotated[FrameTiming | None, Form()] = None,
     platform: Annotated[Platform | None, Form()] = None,
-    hour_x: Annotated[float | None, Form()] = None,
-    hour_y: Annotated[float | None, Form()] = None,
-    minute_x: Annotated[float | None, Form()] = None,
-    minute_y: Annotated[float | None, Form()] = None,
-    second_x: Annotated[float | None, Form()] = None,
-    second_y: Annotated[float | None, Form()] = None,
+    expected_deviation_s: Annotated[float | None, Form()] = None,
 ) -> ReadResult:
     """Read the dial and compute the deviation from the capture time. Persists nothing (unless
     the dev-only WATCHTIMING_SAVE_UPLOADS is set, see upload_log.py).
@@ -253,6 +273,11 @@ async def read(
 
     `hour_*`, `minute_*` (and optionally `second_*`): hand tips the user placed on the photo,
     in the same pixels. When given, they're used instead of detecting the hands.
+
+    `expected_deviation_s`: the watch's predicted deviation (dial − reference, positive = fast),
+    e.g. from the last measurement and the rate. With a reference time it decides which minute
+    a minute hand near a minute boundary means, and which of two hands that could be swapped
+    is the hour hand. It never changes the seconds read.
     """
     data, exif = await _read_upload(file)
     ref, _, timestamp_error = _reference(exif, device_capture_time, frame_timing, platform)
@@ -264,33 +289,7 @@ async def read(
     if not (0 <= tap_x < width and 0 <= tap_y < height):
         raise HTTPException(422, "The tapped point is outside the photo.")
 
-    tap = (tap_x * pre.scale, tap_y * pre.scale)
-    tips = _hand_tips(pre.scale, hour_x, hour_y, minute_x, minute_y, second_x, second_y)
-    reading_out = overlay = reading_error = deviation = None
-    try:
-        if tips is None:
-            reading = await run_in_threadpool(read_dial, pre.gray, tap, pre.color)
-        else:
-            geometry = await run_in_threadpool(locate_dial, pre.gray, tap, pre.color)
-            reading = read_with_hands(geometry, *tips)
-    except HandsNotFoundError as e:
-        # The dial was found: return its geometry so the user can place the hands.
-        reading_error = str(e)
-        overlay = _overlay(photo_overlay(e.geometry, pre.scale))
-    except (DialNotFoundError, UnreadableDialError) as e:
-        reading_error = str(e)
-    else:
-        t, c = reading.time, reading.confidence
-        reading_out = DialReadingOut(
-            hours=t.hours or 12, minutes=t.minutes, seconds=t.seconds,
-            confidence=c.overall, seconds_confidence=c.seconds,
-            needs_confirmation=c.needs_confirmation and not reading.corrected,
-            reasons=list(c.reasons), corrected=reading.corrected,
-        )  # fmt: skip
-        overlay = _overlay(photo_overlay(reading, pre.scale))
-        if ref is not None and t.seconds is not None:
-            deviation = deviation_seconds(t, ref.local_time)
-
+    m = await run_in_threadpool(measure, pre, (tap_x, tap_y), ref, tips, expected_deviation_s)
     offset = ref.local_time.utcoffset() if ref else None
     result = ReadResult(
         image_width=width,
@@ -302,21 +301,24 @@ async def read(
         reference_source=ref.source if ref else None,
         latency_correction_ms=_latency_ms(ref),
         timestamp_error=timestamp_error,
-        reading=reading_out,
-        overlay=overlay,
-        reading_error=reading_error,
-        deviation_s=deviation,
+        reading=_reading_out(m),
+        overlay=_overlay(m.overlay) if m.overlay is not None else None,
+        reading_error=m.reading_error,
+        deviation_s=m.deviation_s,
     )
     if (root := upload_dir()) is not None:
         request = {
             "tap_x": tap_x,
             "tap_y": tap_y,
+            "hand_tips": asdict(tips) if tips is not None else None,
             "device_capture_time": device_capture_time,
             "frame_timing": frame_timing,
             "platform": platform,
+            "expected_deviation_s": expected_deviation_s,
             "filename": file.filename,
         }
+        result_json = result.model_dump_json(indent=2)
         await run_in_threadpool(
-            save_upload, root, data, file.content_type, request, result.model_dump_json(indent=2)
+            save_upload, root, data, file.content_type, request, pre, m, result_json
         )
     return result

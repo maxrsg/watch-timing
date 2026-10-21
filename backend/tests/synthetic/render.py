@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from watchtiming.dial import GrayImage
+from watchtiming.geometry import GrayImage
 
 Point = tuple[float, float]
 Color = int | tuple[int, int, int]  # gray level, or BGR

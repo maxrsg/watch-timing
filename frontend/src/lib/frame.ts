@@ -2,7 +2,8 @@
  * Grab one frame from the live camera together with the device-clock time of that frame.
  * Canvas frames have no EXIF, so the timestamp travels next to the image instead.
  */
-import type { FrameTiming } from '@/api/client'
+import type { DeviceCapture, FrameTiming, Platform } from '@/api/client'
+import { detectPlatform } from '@/lib/platform'
 
 export type CapturedFrame = {
   blob: Blob
@@ -66,4 +67,14 @@ export function captureFrame(video: HTMLVideoElement): Promise<CapturedFrame> {
       reject(new Error('The camera stopped delivering frames.'))
     }, FRAME_TIMEOUT_MS)
   })
+}
+
+/** The frame as an upload: a JPEG file named after its capture time. */
+export function frameToFile(frame: CapturedFrame): File {
+  return new File([frame.blob], `frame-${frame.captureTime.getTime()}.jpg`, { type: frame.blob.type })
+}
+
+/** What the server needs to timestamp a frame that has no EXIF. */
+export function frameDevice(frame: CapturedFrame, platform: Platform = detectPlatform()): DeviceCapture {
+  return { captureTime: frame.captureTime, timing: frame.timing, platform }
 }

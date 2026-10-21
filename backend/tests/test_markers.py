@@ -36,7 +36,7 @@ def test_glare_biases_markers_and_the_reading_falls_back():
 
     dial = render(SCENARIOS["glare"])
     reading = read_dial(dial.image, dial.truth.twelve)
-    assert reading.marker_fit is None
+    assert reading.geometry.marker_fit is None
     assert reading.time.seconds == pytest.approx(37.0, abs=0.05)
 
 

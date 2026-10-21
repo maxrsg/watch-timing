@@ -10,7 +10,6 @@ grid to read the tap from. Images go to
 """
 
 import argparse
-import math
 import sys
 from pathlib import Path
 
@@ -18,22 +17,20 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from watchtiming.dial import (
-    DialNotFoundError,
-    dial_rings,
-    edge_map,
-    preprocess,
-)
-from watchtiming.hands import ANGLE_BINS, hand_traces
+from watchtiming.dial import Preprocessed, dial_rings, edge_map, preprocess
+from watchtiming.geometry import Point, clock_point
 from watchtiming.imaging import InvalidImageError
-from watchtiming.pipeline import DialReading, read_dial, rectified_chroma
-from watchtiming.reading import UnreadableDialError
+from watchtiming.measure import Measurement, measure
+from watchtiming.pipeline import DialReading, rectified_chroma
+from watchtiming.polar import ANGLE_BINS, contrast, unwrap
+from watchtiming.segments import hand_groups, line_segments
 
 Image = npt.NDArray[np.uint8]
 Stage = tuple[str, Image]
 
 # BGR colors for the overlays.
 HOUR, MINUTE, SECOND, OTHER = (60, 60, 230), (230, 140, 40), (40, 200, 40), (160, 160, 160)
+ROLE_COLORS = {"hour": HOUR, "minute": MINUTE, "second": SECOND, "other": OTHER}
 
 
 def _color(gray: Image) -> Image:
@@ -50,27 +47,15 @@ def _draw_ellipse(img: Image, e, color, thickness: int) -> None:
 
 
 def _rectified_overlay(reading: DialReading) -> Image:
-    rect = reading.rectified
+    g = reading.geometry
+    rect = g.rectified
     img = _color(rect.image)
     cv2.circle(img, _pt(rect.center), int(rect.radius), OTHER, 1, cv2.LINE_AA)
-    pivot = reading.pivot.pivot
-    a = reading.assignment
-    roles = {id(a.hour): HOUR, id(a.minute): MINUTE}
-    if a.second is not None:
-        roles[id(a.second)] = SECOND
-    for c in reading.candidates:
-        # Candidate angles include the 12 o'clock correction; draw them in the image's frame.
-        angle = math.radians(c.angle + reading.twelve.offset_deg + a.rotation_deg)
-        tip = (
-            pivot[0] + c.length * rect.radius * math.sin(angle),
-            pivot[1] - c.length * rect.radius * math.cos(angle),
-        )
-        cv2.line(img, _pt(pivot), _pt(tip), roles.get(id(c), OTHER), 2, cv2.LINE_AA)
-    twelve = math.radians(reading.twelve.offset_deg)
-    top = (
-        rect.center[0] + rect.radius * math.sin(twelve),
-        rect.center[1] - rect.radius * math.cos(twelve),
-    )
+    pivot = g.pivot.pivot
+    for role, c in reading.roles():
+        tip = reading.tip_in_rectified(c)
+        cv2.line(img, _pt(pivot), _pt(tip), ROLE_COLORS[role], 2, cv2.LINE_AA)
+    top = clock_point(rect.center, g.twelve.offset_deg, rect.radius)
     cv2.drawMarker(img, _pt(top), SECOND, cv2.MARKER_TRIANGLE_DOWN, 18, 2)
     cv2.drawMarker(img, _pt(pivot), (0, 0, 255), cv2.MARKER_CROSS, 16, 1)
     return img
@@ -81,16 +66,16 @@ def _normalized(polar: npt.NDArray[np.float32]) -> Image:
     return np.clip(polar / top * 255, 0, 255).astype(np.uint8)
 
 
-def _traces_overlay(reading: DialReading, traces) -> Image:
-    """Every hand-like trace on the rectified dial (dots), over the chosen hands."""
+def _segments_overlay(reading: DialReading, segs, groups) -> Image:
+    """Every line segment on the rectified dial (thin), the hand groups (thick, yellow; blocked
+    ones orange), over the chosen hands."""
     img = _rectified_overlay(reading)
-    pivot = reading.pivot.pivot
-    per_deg = ANGLE_BINS / 360
-    for t in traces:
-        for row, r in zip(t.rows, t.radii, strict=True):
-            a = math.radians(row / per_deg)
-            point = (pivot[0] + r * math.sin(a), pivot[1] - r * math.cos(a))
-            cv2.circle(img, _pt(point), 1, (0, 200, 255), -1)
+    for x1, y1, x2, y2 in segs:
+        cv2.line(img, _pt((x1, y1)), _pt((x2, y2)), (90, 90, 90), 1, cv2.LINE_AA)
+    for g in groups:
+        color = (0, 140, 255) if g.blocked else (0, 220, 255)
+        for x1, y1, x2, y2 in g.segments:
+            cv2.line(img, _pt((x1, y1)), _pt((x2, y2)), color, 2, cv2.LINE_AA)
     return img
 
 
@@ -112,28 +97,38 @@ def _grid(gray: Image, scale: float) -> Image:
     return img
 
 
-def debug_stages(data: bytes, tap: tuple[float, float] | None) -> tuple[list[Stage], list[str]]:
-    """Run the pipeline on image bytes; return (named images, info lines). Pure."""
+def debug_stages(data: bytes, tap: Point | None) -> tuple[list[Stage], list[str]]:
+    """Run the pipeline on image bytes; return (named images, info lines). Pure. `tap` is in
+    the upright photo's pixels; without it, only the stages before dial detection run."""
     pre = preprocess(data)
-    color = pre.color
+    if tap is not None:
+        return draw_stages(pre, measure(pre, tap, ref=None))
+    stages, info = _image_stages(pre)
+    stages.insert(0, ("00_grid", _grid(pre.gray, pre.scale)))
+    stages.append(("03_dial", _color(pre.gray)))
+    info.append(
+        "no --tap given: stopping before dial detection. Read the 12 o'clock marker's X,Y "
+        "from 00_grid.png and rerun with --tap X,Y"
+    )
+    return stages, info
+
+
+def _image_stages(pre: Preprocessed) -> tuple[list[Stage], list[str]]:
     height, width = pre.gray.shape
     info = [
         f"original (upright): {pre.original_size[0]}×{pre.original_size[1]}",
         f"preprocessed: {width}×{height}, scale {pre.scale:.4f}",
     ]
-    stages: list[Stage] = [("01_preprocessed", pre.gray), ("02_edges", edge_map(pre.gray))]
+    return [("01_preprocessed", pre.gray), ("02_edges", edge_map(pre.gray))], info
 
+
+def draw_stages(pre: Preprocessed, m: Measurement) -> tuple[list[Stage], list[str]]:
+    """The stage images and info lines of a measurement that has been made (the same one the
+    app was sent, for kept uploads). Pure."""
+    stages, info = _image_stages(pre)
+    color = pre.color
     dial_view = _color(pre.gray)
-    if tap is None:
-        stages.insert(0, ("00_grid", _grid(pre.gray, pre.scale)))
-        stages.append(("03_dial", dial_view))
-        info.append(
-            "no --tap given: stopping before dial detection. Read the 12 o'clock marker's X,Y "
-            "from 00_grid.png and rerun with --tap X,Y"
-        )
-        return stages, info
-
-    tap_px = (tap[0] * pre.scale, tap[1] * pre.scale)
+    tap_px = m.tap
     rings = dial_rings(pre.gray, tap_px)
     for ring in rings:
         _draw_ellipse(dial_view, ring.ellipse, OTHER, 1)
@@ -142,58 +137,64 @@ def debug_stages(data: bytes, tap: tuple[float, float] | None) -> tuple[list[Sta
         + (f" (best: {rings[0].support} points, coverage {rings[0].coverage:.2f})" if rings else "")
     )
     cv2.drawMarker(dial_view, _pt(tap_px), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
-    try:
-        reading = read_dial(pre.gray, tap_px, pre.color)
-    except (DialNotFoundError, UnreadableDialError) as e:
+    reading = m.reading
+    if reading is None:
         stages.append(("03_dial", dial_view))
-        info.append(f"stopped: {e}")
+        info.append(f"stopped: {m.reading_error}")
         return stages, info
 
-    _draw_ellipse(dial_view, reading.ellipse, SECOND, 2)
-    pivot_photo = reading.rectified.to_photo(reading.pivot.pivot)
+    g = reading.geometry
+    _draw_ellipse(dial_view, g.ellipse, SECOND, 2)
+    pivot_photo = g.rectified.to_photo(g.pivot.pivot)
     cv2.drawMarker(dial_view, _pt(pivot_photo), (0, 0, 255), cv2.MARKER_CROSS, 14, 1)
     stages.append(("03_dial", dial_view))
     stages.append(("04_rectified", _rectified_overlay(reading)))
 
-    rect = reading.rectified
-    ev, traces = hand_traces(
-        rect.image, rect.center, reading.pivot.pivot, rect.radius, rectified_chroma(color, rect)
+    rect = g.rectified
+    chroma = rectified_chroma(color, rect)
+    pivot = g.pivot.pivot
+    # Polar image (rows: clock angle, columns: radius from the pivot): contrast with the dial,
+    # with color. The hands are the bright rows; their widths are measured across them here.
+    polar_chroma = None if chroma is None else unwrap(chroma, pivot, rect.radius, ANGLE_BINS)
+    polar = contrast(unwrap(rect.image, pivot, rect.radius, ANGLE_BINS), polar_chroma)
+    stages.append(("05_polar", _normalized(polar)))
+    segs = line_segments(rect.image, chroma)
+    stages.append(
+        ("06_segments", _segments_overlay(reading, segs, hand_groups(segs, pivot, rect.radius)))
     )
-    # Polar images (rows: clock angle, columns: radius from the pivot): contrast with the dial
-    # (with color), and the bar evidence the hands are traced in.
-    stages.append(("05_polar", _normalized(ev.contrast)))
-    stages.append(("06_bars", _normalized(ev.evidence)))
-    stages.append(("07_traces", _traces_overlay(reading, traces)))
 
     a, c = reading.assignment, reading.confidence
     info += [
-        f"pivot: {'from hand lines' if reading.pivot.well_determined else 'hands parallel'}"
-        f" ({len(reading.pivot.lines)} lines)",
+        f"pivot: {'from hand edges' if g.pivot.well_determined else 'hands parallel'}"
+        f" ({len(g.pivot.lines)} segments)",
         "rectified from: "
         + (
-            f"{len(reading.marker_fit.inliers)} hour markers"
-            f" (fit error {reading.marker_fit.rms_error:.1%})"
-            if reading.marker_fit
+            f"{len(g.marker_fit.inliers)} hour markers (fit error {g.marker_fit.rms_error:.1%})"
+            if g.marker_fit
             else "ring + pivot"
         ),
-        f"12 o'clock: {'markers' if reading.twelve.from_markers else 'tap only'},"
-        f" offset {reading.twelve.offset_deg:+.2f}°, periodicity {reading.twelve.periodicity:.1f}",
+        f"12 o'clock: {'markers' if g.twelve.from_markers else 'tap only'},"
+        f" offset {g.twelve.offset_deg:+.2f}°, periodicity {g.twelve.periodicity:.1f}",
         "candidates: "
         + ", ".join(
-            f"{h.angle:.2f}° len {h.length:.2f} w {h.width:.3f}" for h in reading.candidates
+            f"{h.angle:.2f}° len {h.length:.2f}{'+' if h.blocked else ''} w {h.width:.3f}"
+            for h in reading.candidates
         ),
         f"hands: hour {a.hour_angle:.2f}°, minute {a.minute_angle:.2f}°, second "
         + (f"{a.second_angle:.2f}°" if a.second_angle is not None else "none"),
         f"residuals: minute vs seconds {a.minute_residual_s or 0:+.1f} s,"
         f" hour vs minute {a.hour_residual_min:+.1f} min",
         f"time: {reading.time}   confidence {c.overall:.2f} / seconds {c.seconds:.2f}"
-        + ("   (needs confirmation)" if c.needs_confirmation else ""),
+        + ("   (needs confirmation)" if reading.needs_confirmation else "")
+        + ("   (hands placed by the user)" if reading.corrected else ""),
         *(f"  · {r}" for r in c.reasons),
     ]
+    if m.deviation_s is not None:
+        info.append(f"deviation: {m.deviation_s:+.2f} s")
     return stages, info
 
 
-def _parse_tap(text: str) -> tuple[float, float]:
+def _parse_tap(text: str) -> Point:
     x, y = text.split(",")
     return float(x), float(y)
 

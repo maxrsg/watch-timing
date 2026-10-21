@@ -83,6 +83,11 @@ export interface paths {
          *
          *     `hour_*`, `minute_*` (and optionally `second_*`): hand tips the user placed on the photo,
          *     in the same pixels. When given, they're used instead of detecting the hands.
+         *
+         *     `expected_deviation_s`: the watch's predicted deviation (dial − reference, positive = fast),
+         *     e.g. from the last measurement and the rate. With a reference time it decides which minute
+         *     a minute hand near a minute boundary means, and which of two hands that could be swapped
+         *     is the hour hand. It never changes the seconds read.
          */
         post: operations["read_api_read_post"];
         delete?: never;
@@ -128,6 +133,8 @@ export interface components {
             second_x?: number | null;
             /** Second Y */
             second_y?: number | null;
+            /** Expected Deviation S */
+            expected_deviation_s?: number | null;
         };
         /** DialReadingOut */
         DialReadingOut: {

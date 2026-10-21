@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Camera, CircleAlert, CircleCheck, LoaderCircle } from 'lucide-react'
+import { CircleAlert, CircleCheck, LoaderCircle } from 'lucide-react'
 import { probe, type ProbeResult } from '@/api/client'
-import { LibraryButton } from '@/components/LibraryButton'
-import { LiveCamera } from '@/components/LiveCamera'
+import { CapturePicker } from '@/components/CapturePicker'
+import { DefinitionRow } from '@/components/DefinitionRow'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { type ClockSample, measureClockOffset } from '@/lib/clock'
@@ -17,8 +16,7 @@ import {
   sha256Hex,
 } from '@/lib/exif'
 import { errorText, formatSignedMs, formatSignedSeconds, formatUtcTime } from '@/lib/format'
-import type { CapturedFrame } from '@/lib/frame'
-import { detectPlatform } from '@/lib/platform'
+import { type CapturedFrame, frameDevice, frameToFile } from '@/lib/frame'
 
 type Source = 'live' | 'library'
 
@@ -45,17 +43,7 @@ function StatusBadge({ status }: { status: FieldStatus }) {
   return <Badge variant="destructive">{status}</Badge>
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <>
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="tabular-nums">{children}</dd>
-    </>
-  )
-}
-
 export function CaptureProbe() {
-  const [cameraOpen, setCameraOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [run, setRun] = useState<Run | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -88,14 +76,7 @@ export function CaptureProbe() {
       let server: ProbeResult | null = null
       let serverError: string | null = null
       try {
-        server = await probe(
-          file,
-          frame && {
-            captureTime: frame.captureTime,
-            timing: frame.timing,
-            platform: detectPlatform(),
-          },
-        )
+        server = await probe(file, frame && frameDevice(frame))
       } catch (e) {
         serverError = errorText(e)
       }
@@ -150,28 +131,11 @@ export function CaptureProbe() {
         </p>
       </header>
 
-      {cameraOpen ? (
-        <LiveCamera
-          disabled={busy}
-          onClose={() => setCameraOpen(false)}
-          onCapture={(frame) =>
-            handle(
-              new File([frame.blob], `frame-${frame.captureTime.getTime()}.jpg`, {
-                type: frame.blob.type,
-              }),
-              'live',
-              frame,
-            )
-          }
-        />
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          <Button size="touch" disabled={busy} onClick={() => setCameraOpen(true)}>
-            <Camera /> Open camera
-          </Button>
-          <LibraryButton disabled={busy} onFile={(f) => handle(f, 'library')} />
-        </div>
-      )}
+      <CapturePicker
+        disabled={busy}
+        onFrame={(frame) => handle(frameToFile(frame), 'live', frame)}
+        onFile={(f) => handle(f, 'library')}
+      />
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
@@ -215,50 +179,50 @@ export function CaptureProbe() {
               )}
               <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
                 {referenceMs !== null && (
-                  <Row label="Reference (UTC)">{formatUtcTime(referenceMs)}</Row>
+                  <DefinitionRow label="Reference (UTC)">{formatUtcTime(referenceMs)}</DefinitionRow>
                 )}
                 {run.frame && (
                   <>
-                    <Row label="Frame timing">{run.frame.timing}</Row>
-                    {run.server?.platform && <Row label="Platform">{run.server.platform}</Row>}
+                    <DefinitionRow label="Frame timing">{run.frame.timing}</DefinitionRow>
+                    {run.server?.platform && <DefinitionRow label="Platform">{run.server.platform}</DefinitionRow>}
                     {run.server?.reference_source === 'device_clock' && (
-                      <Row label="Latency correction">
+                      <DefinitionRow label="Latency correction">
                         {run.server.latency_correction_ms === null ? (
                           <Badge variant="destructive">uncalibrated</Badge>
                         ) : (
                           formatSignedMs(-run.server.latency_correction_ms)
                         )}
-                      </Row>
+                      </DefinitionRow>
                     )}
-                    <Row label="Frame size">
+                    <DefinitionRow label="Frame size">
                       {run.frame.width}×{run.frame.height}
-                    </Row>
+                    </DefinitionRow>
                   </>
                 )}
-                <Row label="Server vs phone clock">
+                <DefinitionRow label="Server vs phone clock">
                   {run.clock ? (
                     `${formatSignedMs(run.clock.offsetMs)} (±${(run.clock.rttMs / 2).toFixed(0)} ms)`
                   ) : (
                     <span className="text-destructive">unavailable: {run.clockError}</span>
                   )}
-                </Row>
+                </DefinitionRow>
                 {/* Compare with the reference clock visible in the photo:
                     visible − raw = the camera's lag (use this to calibrate a new device);
                     visible − corrected = the error left after the correction (≈ 0 if calibrated). */}
                 {run.frame && run.clock && (
-                  <Row label="Server time at capture (raw)">
+                  <DefinitionRow label="Server time at capture (raw)">
                     {formatUtcTime(run.frame.captureTime.getTime() + run.clock.offsetMs)}
-                  </Row>
+                  </DefinitionRow>
                 )}
                 {referenceMs !== null && run.clock && (
-                  <Row label={run.frame ? 'Server time at capture (corrected)' : 'Server time at capture'}>
+                  <DefinitionRow label={run.frame ? 'Server time at capture (corrected)' : 'Server time at capture'}>
                     {formatUtcTime(referenceMs + run.clock.offsetMs)}
-                  </Row>
+                  </DefinitionRow>
                 )}
                 {referenceMs !== null && run.source === 'library' && (
-                  <Row label="Selected after capture">
+                  <DefinitionRow label="Selected after capture">
                     {formatSignedSeconds((run.selectedAt.getTime() - referenceMs) / 1000)}
-                  </Row>
+                  </DefinitionRow>
                 )}
               </dl>
               {shaStatus && (

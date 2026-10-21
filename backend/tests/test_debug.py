@@ -26,7 +26,7 @@ def test_with_tap_writes_every_stage(tmp_path, capsys):
     assert main([str(image), "--tap", tap, "-o", str(out)]) == 0
 
     stems = {p.stem for p in out.iterdir()}
-    assert {"03_dial", "04_rectified", "05_polar", "06_bars", "07_traces"} <= stems
+    assert {"03_dial", "04_rectified", "05_polar", "06_segments"} <= stems
     assert "time: 10:08:37.0" in capsys.readouterr().out
 
 

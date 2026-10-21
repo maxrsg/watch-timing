@@ -9,6 +9,12 @@ export type Platform = components['schemas']['Platform']
 export type ReadResult = components['schemas']['ReadResult']
 export type Overlay = components['schemas']['Overlay']
 export type DialReading = components['schemas']['DialReadingOut']
+/** A point in the upright photo's pixels: the frame the tap, the overlay and hand tips use. */
+export type PhotoPoint = components['schemas']['PhotoPoint']
+export type OverlayRole = components['schemas']['HandOverlay']['role']
+export type HandRole = Exclude<OverlayRole, 'other'>
+/** Hand tips the user placed, in photo pixels. `second: null` = no seconds hand. */
+export type HandTips = Record<'hour' | 'minute', PhotoPoint> & { second: PhotoPoint | null }
 
 export type DeviceCapture = { captureTime: Date; timing: FrameTiming; platform: Platform }
 
@@ -38,17 +44,15 @@ export async function probe(file: File, device?: DeviceCapture): Promise<ProbeRe
   return res.json()
 }
 
-type Point = { x: number; y: number }
-
 /**
  * Read the dial. `tap` is the 12 o'clock marker in the upright photo's pixels. With `hands`
  * (tips the user placed, same pixels), the server uses them instead of detecting the hands.
  */
 export async function readDial(
   file: File,
-  tap: Point,
+  tap: PhotoPoint,
   device?: DeviceCapture,
-  hands?: { hour: Point; minute: Point; second: Point | null },
+  hands?: HandTips,
 ): Promise<ReadResult> {
   const form = uploadForm(file, device)
   form.append('tap_x', String(tap.x))
