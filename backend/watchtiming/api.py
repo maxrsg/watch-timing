@@ -217,13 +217,18 @@ def _overlay(o: OverlayGeometry) -> Overlay:
     )
 
 
+# A hand-tip coordinate. Pydantic accepts "nan" and "inf" for floats by default; they would
+# reach the geometry and crash the read (500), so they're rejected here (422).
+TipCoord = Annotated[float | None, Form(allow_inf_nan=False)]
+
+
 def _hand_tips(
-    hour_x: Annotated[float | None, Form()] = None,
-    hour_y: Annotated[float | None, Form()] = None,
-    minute_x: Annotated[float | None, Form()] = None,
-    minute_y: Annotated[float | None, Form()] = None,
-    second_x: Annotated[float | None, Form()] = None,
-    second_y: Annotated[float | None, Form()] = None,
+    hour_x: TipCoord = None,
+    hour_y: TipCoord = None,
+    minute_x: TipCoord = None,
+    minute_y: TipCoord = None,
+    second_x: TipCoord = None,
+    second_y: TipCoord = None,
 ) -> HandTips | None:
     """Hand tips the user placed on the photo, or None when none were sent. Hour and minute are
     required together; seconds are optional."""

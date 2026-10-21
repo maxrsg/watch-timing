@@ -160,6 +160,13 @@ def test_partial_hand_tips_are_rejected():
     assert post(photo(None), hour_x=10, hour_y=10).status_code == 422
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+@pytest.mark.parametrize("field", ["hour_x", "minute_y", "second_x"])
+def test_non_finite_hand_tips_are_rejected(field, value):
+    tips = dict(hour_x=10, hour_y=10, minute_x=20, minute_y=20, second_x=30, second_y=30)
+    assert post(photo(None), **{**tips, field: value}).status_code == 422
+
+
 def test_kept_uploads_record_the_placed_hands(tmp_path, monkeypatch):
     """A kept upload replays what the app was sent: the hand tips are in the request, and the
     debug stages show the placed reading, not a fresh detection."""
