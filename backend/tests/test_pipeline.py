@@ -1,5 +1,6 @@
 """The pipeline's wiring: the reading's shape, roles, overlay and how often it detects segments."""
 
+import numpy as np
 import pytest
 
 from tests.synthetic.render import DialSpec, render
@@ -65,3 +66,16 @@ def test_segments_are_detected_once_per_rectification(monkeypatch, name, expecte
     dial = render(SCENARIOS[name])
     read_dial(dial.image, dial.truth.twelve)
     assert len(calls) == expected
+
+
+@pytest.mark.parametrize("name", list(SCENARIOS))
+def test_placed_hands_use_the_geometry_the_reading_showed(name):
+    """Hands the user drags on the overlay are measured from the pivot and rectification the
+    reading drew, also when it chose the ring over less clean markers."""
+    dial = render(SCENARIOS[name])
+    reading = read_dial(dial.image, dial.truth.twelve)
+    geometry = locate_dial(dial.image, dial.truth.twelve)
+    assert (geometry.marker_fit is None) == (reading.geometry.marker_fit is None)
+    assert geometry.pivot.pivot == reading.geometry.pivot.pivot
+    assert geometry.twelve == reading.geometry.twelve
+    assert np.array_equal(geometry.rectified.homography, reading.geometry.rectified.homography)

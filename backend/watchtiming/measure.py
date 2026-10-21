@@ -71,12 +71,12 @@ def measure(
         return p[0] * pre.scale, p[1] * pre.scale
 
     tap_px = scaled(tap)
+    expected = expected_dial_seconds(ref, expected_deviation_s)
     try:
         if tips is None:
-            expected = expected_dial_seconds(ref, expected_deviation_s)
             reading = read_dial(pre.gray, tap_px, pre.color, expected)
         else:
-            geometry = locate_dial(pre.gray, tap_px, pre.color)
+            geometry = locate_dial(pre.gray, tap_px, pre.color, expected)
             second = scaled(tips.second) if tips.second is not None else None
             reading = read_with_hands(geometry, scaled(tips.hour), scaled(tips.minute), second)
     except HandsNotFoundError as e:

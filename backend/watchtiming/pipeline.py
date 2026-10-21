@@ -276,13 +276,15 @@ def read_dial(
     return min(readings, key=lambda r: (r.confidence.needs_confirmation, r.assignment.cost))
 
 
-def locate_dial(gray: GrayImage, tap: Point, color: ColorImage | None = None) -> DialGeometry:
-    """The dial's geometry without reading hands: from the markers when they fit, else a ring."""
-    ellipse = find_dial(gray, tap)
-    rectification = _from_markers(gray, ellipse, tap, color) or _from_ring(
-        gray, ellipse, tap, color
-    )
-    return rectification.geometry
+def locate_dial(
+    gray: GrayImage, tap: Point, color: ColorImage | None = None, expected_s: float | None = None
+) -> DialGeometry:
+    """The geometry `read_dial` reads the dial in (same arguments, same choice of rectification),
+    so hands the user placed on its overlay are measured from the pivot they were shown."""
+    try:
+        return read_dial(gray, tap, color, expected_s).geometry
+    except HandsNotFoundError as e:
+        return e.geometry
 
 
 def read_with_hands(
