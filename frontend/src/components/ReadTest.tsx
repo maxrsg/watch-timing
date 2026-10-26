@@ -1,27 +1,41 @@
 import { useEffect, useState } from 'react'
 import { Check, CircleAlert, LoaderCircle, Move, RotateCcw, X } from 'lucide-react'
-import { type DeviceCapture, type HandTips, type PhotoPoint, type ReadResult, readDial } from '@/api/client'
+import {
+  type DeviceCapture,
+  type HandTips,
+  type PhotoPoint,
+  type ReadResult,
+  type TypedTime,
+  readDial,
+} from '@/api/client'
 import { CapturePicker } from '@/components/CapturePicker'
 import { DefinitionRow } from '@/components/DefinitionRow'
 import { PhotoOverlay } from '@/components/PhotoOverlay'
+import { TypedTimeForm } from '@/components/TypedTimeForm'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { errorText, formatDialTime, formatSignedSeconds, formatWallTime } from '@/lib/format'
 import { type CapturedFrame, frameDevice, frameToFile } from '@/lib/frame'
 import { initialTip, initialTips } from '@/lib/hands'
+import { typedTimePlaceholders } from '@/lib/typed-time'
 import { cn } from '@/lib/utils'
 
 type Photo = { file: File; url: string; device?: DeviceCapture }
 
+/** Viewing the photo and reading, or dragging the hands into place. */
+type Mode = { kind: 'view' } | { kind: 'hands'; tips: HandTips }
+
+const BADGE = { hands: 'hands placed by you', typed: 'typed by you' } as const
+
 /** What to tell the user to do next. */
-function instruction(photo: Photo | null, result: ReadResult | null, correcting: boolean): string {
-  if (correcting) {
+function instruction(photo: Photo | null, result: ReadResult | null, mode: Mode): string {
+  if (mode.kind === 'hands') {
     return 'Drag each colored dot onto its hand (anywhere along it; only the direction counts). Zoom in for the seconds.'
   }
   if (!photo) return "Take a photo of the watch, filling most of the frame, then tap 12 o'clock."
-  if (!result) return "Tap the 12 o'clock marker on the photo."
-  return "Tap 12 o'clock again to re-read, correct the hands, or take a new photo."
+  if (!result) return "Tap the 12 o'clock marker on the photo, or type the time below."
+  return "Tap 12 o'clock again to re-read, correct the hands, or type the time below."
 }
 
 function Result({ result }: { result: ReadResult }) {
@@ -41,7 +55,7 @@ function Result({ result }: { result: ReadResult }) {
             </>
           )}
           {r?.needs_confirmation && <Badge variant="destructive">check this reading</Badge>}
-          {r?.corrected && <Badge variant="secondary">hands placed by you</Badge>}
+          {r?.correction && <Badge variant="secondary">{BADGE[r.correction]}</Badge>}
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3 text-sm">
@@ -69,7 +83,7 @@ function Result({ result }: { result: ReadResult }) {
               </span>
             </DefinitionRow>
           )}
-          {r && (
+          {r && r.correction !== 'typed' && (
             <DefinitionRow label="Confidence">
               {Math.round(r.confidence * 100)} %, seconds {Math.round(r.seconds_confidence * 100)} %
             </DefinitionRow>
@@ -83,7 +97,7 @@ function Result({ result }: { result: ReadResult }) {
             ))}
           </ul>
         )}
-        {r && (
+        {r && result.overlay && (
           <p className="text-muted-foreground">
             Drawn on the photo: <span className="text-overlay-hour">hour</span>,{' '}
             <span className="text-overlay-minute">minute</span>,{' '}
@@ -102,8 +116,7 @@ export function ReadTest() {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<ReadResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // Non-null while the user drags the hands into place.
-  const [tips, setTips] = useState<HandTips | null>(null)
+  const [mode, setMode] = useState<Mode>({ kind: 'view' })
 
   const url = photo?.url
   useEffect(() => {
@@ -117,7 +130,7 @@ export function ReadTest() {
     setTap(null)
     setResult(null)
     setError(null)
-    setTips(null)
+    setMode({ kind: 'view' })
   }
 
   function start(file: File, device?: DeviceCapture) {
@@ -128,14 +141,15 @@ export function ReadTest() {
     start(frameToFile(frame), frameDevice(frame))
   }
 
-  async function read(point: PhotoPoint, hands?: HandTips) {
+  /** Send the photo with a tap (and placed hands), or with a typed time. */
+  async function read(point: PhotoPoint | null, hands?: HandTips, typed?: TypedTime) {
     if (!photo || busy) return
-    setTap(point)
+    if (point) setTap(point)
     setBusy(true)
     setError(null)
     try {
-      setResult(await readDial(photo.file, point, photo.device, hands))
-      setTips(null)
+      setResult(await readDial(photo.file, point, photo.device, hands, typed))
+      setMode({ kind: 'view' })
     } catch (e) {
       setError(errorText(e))
     } finally {
@@ -145,13 +159,11 @@ export function ReadTest() {
 
   // The overlay the hands are placed on: the dial was found (with or without a reading).
   const overlay = result?.overlay ?? null
+  const tips = mode.kind === 'hands' ? mode.tips : null
 
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-4">
-      <header className="flex flex-col gap-1">
-        <h1 className="font-heading text-2xl font-semibold">Read the dial</h1>
-        <p className="text-sm text-muted-foreground">{instruction(photo, result, tips !== null)}</p>
-      </header>
+    <div className="mx-auto flex w-full max-w-xl flex-col gap-4">
+      <p className="text-sm text-muted-foreground">{instruction(photo, result, mode)}</p>
 
       {!photo && <CapturePicker onFrame={fromFrame} onFile={(f) => start(f)} />}
 
@@ -163,7 +175,9 @@ export function ReadTest() {
             overlay={overlay}
             onTap={(point) => void read(point)}
             tips={tips}
-            onMoveTip={(role, point) => setTips((t) => (t ? { ...t, [role]: point } : t))}
+            onMoveTip={(role, point) =>
+              setMode((m) => (m.kind === 'hands' ? { ...m, tips: { ...m.tips, [role]: point } } : m))
+            }
           />
           {tips && tap && (
             <div className="flex flex-wrap gap-2">
@@ -173,16 +187,20 @@ export function ReadTest() {
               <Button
                 size="touch"
                 variant="outline"
-                onClick={() =>
-                  setTips((t) => {
-                    if (!t || !overlay) return t
-                    return { ...t, second: t.second ? null : initialTip(overlay, 'second') }
-                  })
-                }
+                onClick={() => {
+                  if (!overlay) return
+                  const second = tips.second ? null : initialTip(overlay, 'second')
+                  setMode({ kind: 'hands', tips: { ...tips, second } })
+                }}
               >
                 {tips.second ? 'No seconds hand' : 'Add seconds hand'}
               </Button>
-              <Button size="touch" variant="ghost" onClick={() => setTips(null)} aria-label="Stop correcting">
+              <Button
+                size="touch"
+                variant="ghost"
+                onClick={() => setMode({ kind: 'view' })}
+                aria-label="Stop correcting"
+              >
                 <X />
               </Button>
             </div>
@@ -193,23 +211,31 @@ export function ReadTest() {
             </p>
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
-          {result && !busy && !tips && (
-            <>
-              <Result result={result} />
-              {overlay && tap && (
+          {result && !busy && mode.kind === 'view' && <Result result={result} />}
+          {mode.kind === 'view' && (
+            <TypedTimeForm
+              key={photo.url}
+              placeholders={typedTimePlaceholders(result)}
+              busy={busy}
+              onSubmit={(typed) => void read(null, undefined, typed)}
+            />
+          )}
+          {!busy && mode.kind === 'view' && (
+            <div className="flex flex-wrap gap-2">
+              {result && overlay && tap && (
                 <Button
                   size="touch"
                   variant={result.reading?.needs_confirmation || !result.reading ? 'default' : 'outline'}
-                  onClick={() => setTips(initialTips(overlay))}
+                  onClick={() => setMode({ kind: 'hands', tips: initialTips(overlay) })}
                 >
-                  <Move /> {result.reading ? 'Correct the hands' : 'Place the hands yourself'}
+                  <Move /> {result.reading ? 'Correct the hands' : 'Place the hands'}
                 </Button>
               )}
-            </>
+              <Button size="touch" variant="outline" onClick={() => reset()}>
+                <RotateCcw /> New photo
+              </Button>
+            </div>
           )}
-          <Button size="touch" variant="outline" onClick={() => reset()} disabled={busy}>
-            <RotateCcw /> New photo
-          </Button>
         </>
       )}
     </div>

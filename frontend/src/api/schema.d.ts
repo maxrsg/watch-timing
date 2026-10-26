@@ -78,11 +78,16 @@ export interface paths {
          * @description Read the dial and compute the deviation from the capture time. Persists nothing (unless
          *     the dev-only WATCHTIMING_SAVE_UPLOADS is set, see upload_log.py).
          *
-         *     `tap_x`, `tap_y`: the 12 o'clock marker in the upright photo's pixels. The device fields are
-         *     as for /api/probe; `device_capture_time` should carry the phone's local UTC offset.
+         *     `tap_x`, `tap_y`: the 12 o'clock marker in the upright photo's pixels (required unless the
+         *     time is typed). The device fields are as for /api/probe; `device_capture_time` should carry
+         *     the phone's local UTC offset.
          *
          *     `hour_*`, `minute_*` (and optionally `second_*`): hand tips the user placed on the photo,
          *     in the same pixels. When given, they're used instead of detecting the hands.
+         *
+         *     `typed_hours` (1–12), `typed_minutes`, `typed_seconds`: the time the user read off the dial
+         *     and typed. When given, the dial isn't read at all (no overlay); the photo only provides the
+         *     reference time. Typed reads aren't kept by WATCHTIMING_SAVE_UPLOADS (it saves the CV stages).
          *
          *     `expected_deviation_s`: the watch's predicted deviation (dial − reference, positive = fast),
          *     e.g. from the last measurement and the rate. With a reference time it decides which minute
@@ -114,13 +119,15 @@ export interface components {
             /** File */
             file: string;
             /** Tap X */
-            tap_x: number;
+            tap_x?: number | null;
             /** Tap Y */
-            tap_y: number;
+            tap_y?: number | null;
             /** Device Capture Time */
             device_capture_time?: string | null;
             frame_timing?: components["schemas"]["FrameTiming"] | null;
             platform?: components["schemas"]["Platform"] | null;
+            /** Expected Deviation S */
+            expected_deviation_s?: number | null;
             /** Hour X */
             hour_x?: number | null;
             /** Hour Y */
@@ -133,8 +140,12 @@ export interface components {
             second_x?: number | null;
             /** Second Y */
             second_y?: number | null;
-            /** Expected Deviation S */
-            expected_deviation_s?: number | null;
+            /** Typed Hours */
+            typed_hours?: number | null;
+            /** Typed Minutes */
+            typed_minutes?: number | null;
+            /** Typed Seconds */
+            typed_seconds?: number | null;
         };
         /** DialReadingOut */
         DialReadingOut: {
@@ -152,8 +163,8 @@ export interface components {
             needs_confirmation: boolean;
             /** Reasons */
             reasons: string[];
-            /** Corrected */
-            corrected: boolean;
+            /** Correction */
+            correction: ("hands" | "typed") | null;
         };
         /** ExifTags */
         ExifTags: {

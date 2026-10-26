@@ -119,17 +119,14 @@ export function CaptureProbe() {
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
-      <header className="flex flex-col gap-1">
-        <h1 className="font-heading text-2xl font-semibold">Capture timestamp check</h1>
-        <p className="text-sm text-muted-foreground">
-          Capture with the in-app camera (timestamped with the device clock), or pick a photo from
-          the library (timestamped from EXIF). To measure the in-app camera's timing, open{' '}
-          <a className="text-foreground underline" href="/#clock" target="_blank" rel="noreferrer">
-            the reference clock
-          </a>{' '}
-          on a computer and photograph it.
-        </p>
-      </header>
+      <p className="text-sm text-muted-foreground">
+        Capture with the in-app camera (timestamped with the device clock), or pick a photo from
+        the library (timestamped from EXIF). To measure the in-app camera's timing, open{' '}
+        <a className="text-foreground underline" href="/#clock" target="_blank" rel="noreferrer">
+          the reference clock
+        </a>{' '}
+        on a computer and photograph it.
+      </p>
 
       <CapturePicker
         disabled={busy}

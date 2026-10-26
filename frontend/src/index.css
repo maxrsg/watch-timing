@@ -154,6 +154,13 @@
     @apply font-sans;
     }
 }
+/* The square viewfinder and photo view: full width on a phone, never taller than 60% of the
+   screen (wide or landscape screens), so the controls below stay in view. */
+@utility preview-square {
+  width: min(100%, 60svh);
+  aspect-ratio: 1;
+  margin-inline: auto;
+}
 /* Page padding that respects notches/home indicator in the installed PWA. */
 @utility safe-area-p {
   padding-top: max(--spacing(4), env(safe-area-inset-top));

@@ -11,8 +11,9 @@ from tests.synthetic.truth import dial_point
 from watchtiming import measure as measure_module
 from watchtiming.dial import preprocess
 from watchtiming.geometry import apply_homography
-from watchtiming.measure import HandTips, expected_dial_seconds, measure
+from watchtiming.measure import HandTips, expected_dial_seconds, measure, measure_typed
 from watchtiming.pipeline import HandsNotFoundError, locate_dial
+from watchtiming.reading import DialTime
 from watchtiming.reference import Reference, ReferenceSource
 
 CEST = timezone(timedelta(hours=2))
@@ -80,3 +81,9 @@ def test_expected_dial_seconds_wraps_at_12_hours():
     assert expected_dial_seconds(ref, 15.0) == pytest.approx(5.0)
     assert expected_dial_seconds(ref, None) is None
     assert expected_dial_seconds(None, 15.0) is None
+
+
+def test_a_typed_time_is_compared_like_a_reading():
+    ref = reference(datetime(2026, 10, 18, 22, 8, 34, 500_000, tzinfo=CEST))
+    assert measure_typed(DialTime(10, 8, 37.0), ref) == pytest.approx(2.5)  # PM resolved
+    assert measure_typed(DialTime(10, 8, 37.0), None) is None

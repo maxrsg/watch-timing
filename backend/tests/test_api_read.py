@@ -42,6 +42,7 @@ def test_reads_the_dial_and_computes_the_deviation():
     # Photo taken at 10:08:34.5 local; the dial shows 10:08:37.0 → the watch is 2.5 s fast.
     body = post(photo("2026:10:18 10:08:34", "5")).json()
     r = body["reading"]
+    assert r["correction"] is None
     assert (r["hours"], r["minutes"]) == (10, 8)
     assert r["seconds"] == pytest.approx(37.0, abs=0.05)
     assert not r["needs_confirmation"]
@@ -129,7 +130,7 @@ def test_user_placed_hands_give_the_reading():
     fields = hand_fields(tip(a.hour, 0.3), tip(a.minute, 0.75), tip(a.second, 0.5))
     body = post(photo("2026:10:18 10:08:34", "5"), **fields).json()
     r = body["reading"]
-    assert r["corrected"] is True and r["needs_confirmation"] is False
+    assert r["correction"] == "hands" and r["needs_confirmation"] is False
     assert (r["hours"], r["minutes"]) == (10, 8)
     assert r["seconds"] == pytest.approx(37.0, abs=0.05)
     assert body["deviation_s"] == pytest.approx(2.5, abs=0.05)
@@ -182,6 +183,82 @@ def test_kept_uploads_record_the_placed_hands(tmp_path, monkeypatch):
     info = (folder / "info.txt").read_text()
     assert "hands placed by the user" in info
     assert "deviation: +2.50 s" in info
+
+
+def typed_fields(hours, minutes, seconds) -> dict:
+    return {"typed_hours": hours, "typed_minutes": minutes, "typed_seconds": seconds}
+
+
+def post_typed(data: bytes, **fields):
+    """A typed time, without a tap."""
+    return client.post("/api/read", files={"file": ("dial.jpg", data, "image/jpeg")}, data=fields)
+
+
+def test_a_typed_time_gives_the_deviation_without_reading_the_dial():
+    # Photo taken at 10:08:34.5 local; the user typed 10:08:36.0 → 1.5 s fast.
+    body = post_typed(photo("2026:10:18 10:08:34", "5"), **typed_fields(10, 8, 36.0)).json()
+    r = body["reading"]
+    assert (r["hours"], r["minutes"], r["seconds"]) == (10, 8, 36.0)
+    assert r["correction"] == "typed" and r["needs_confirmation"] is False
+    assert body["overlay"] is None and body["reading_error"] is None
+    assert body["deviation_s"] == pytest.approx(1.5)
+    assert (body["image_width"], body["image_height"]) == DIAL.image.shape[::-1]
+
+
+def test_a_typed_time_is_slow_with_a_negative_deviation():
+    body = post_typed(photo("2026:10:18 10:08:34", "5"), **typed_fields(10, 8, 30.5)).json()
+    assert body["deviation_s"] == pytest.approx(-4.0)
+
+
+@pytest.mark.parametrize(
+    ("exif_local", "typed", "deviation"),
+    [
+        ("2026:10:18 23:59:58", (12, 0, 1.0), 3.0),  # dial past midnight, photo before
+        ("2026:10:19 00:00:02", (11, 59, 59.0), -3.0),  # dial before midnight, photo after
+        ("2026:10:18 12:00:01", (12, 0, 0.0), -1.0),  # noon: 12 on the dial is 0 h
+    ],
+)
+def test_a_typed_time_wraps_around_12_hours(exif_local, typed, deviation):
+    body = post_typed(photo(exif_local, "0"), **typed_fields(*typed)).json()
+    assert body["deviation_s"] == pytest.approx(deviation)
+
+
+def test_a_typed_time_ignores_the_tap():
+    body = post(photo("2026:10:18 10:08:34", "5"), **typed_fields(10, 8, 36.0)).json()
+    assert body["reading"]["correction"] == "typed" and body["overlay"] is None
+
+
+def test_a_typed_time_without_a_timestamp_has_no_deviation():
+    body = post_typed(photo(None), **typed_fields(10, 8, 36.0)).json()
+    assert body["reading"]["seconds"] == 36.0
+    assert body["deviation_s"] is None
+    assert "no capture timestamp" in body["timestamp_error"]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"typed_hours": 10, "typed_minutes": 8},  # partial
+        typed_fields(0, 8, 36),
+        typed_fields(13, 8, 36),
+        typed_fields(10, 60, 36),
+        typed_fields(10, 8, 60),
+        typed_fields(10, 8, -1),
+        typed_fields(10, 8, "nan"),
+        typed_fields(10, 8, "inf"),
+    ],
+)
+def test_invalid_typed_times_are_rejected(fields):
+    assert post_typed(photo("2026:10:18 10:08:34"), **fields).status_code == 422
+
+
+def test_a_typed_time_and_hand_tips_are_rejected_together():
+    fields = typed_fields(10, 8, 36) | dict(hour_x=10, hour_y=10, minute_x=20, minute_y=20)
+    assert post(photo(None), **fields).status_code == 422
+
+
+def test_a_tap_is_required_without_a_typed_time():
+    assert post_typed(photo(None)).status_code == 422
 
 
 def test_the_api_does_not_load_the_debug_tools():

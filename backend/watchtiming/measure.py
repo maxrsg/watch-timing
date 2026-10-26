@@ -18,7 +18,12 @@ from watchtiming.pipeline import (
     read_dial,
     read_with_hands,
 )
-from watchtiming.reading import UnreadableDialError, deviation_seconds, seconds_into_12h
+from watchtiming.reading import (
+    DialTime,
+    UnreadableDialError,
+    deviation_seconds,
+    seconds_into_12h,
+)
 from watchtiming.reference import Reference
 
 TWELVE_HOURS_S = 12 * 3600
@@ -89,3 +94,11 @@ def measure(
     if ref is not None and reading.time.seconds is not None:
         deviation = deviation_seconds(reading.time, ref.local_time)
     return Measurement(reading, photo_overlay(reading, pre.scale), None, deviation, tap_px)
+
+
+def measure_typed(time: DialTime, ref: Reference | None) -> float | None:
+    """The deviation for a time the user typed instead of a reading (seconds required), or None
+    without a reference. AM/PM and the 12 h wrap are resolved like a reading's."""
+    if ref is None:
+        return None
+    return deviation_seconds(time, ref.local_time)

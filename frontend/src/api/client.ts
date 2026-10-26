@@ -16,6 +16,9 @@ export type HandRole = Exclude<OverlayRole, 'other'>
 /** Hand tips the user placed, in photo pixels. `second: null` = no seconds hand. */
 export type HandTips = Record<'hour' | 'minute', PhotoPoint> & { second: PhotoPoint | null }
 
+/** A time the user read off the dial and typed: hours 1–12 as the dial shows them. */
+export type TypedTime = { hours: number; minutes: number; seconds: number }
+
 export type DeviceCapture = { captureTime: Date; timing: FrameTiming; platform: Platform }
 
 async function errorMessage(res: Response): Promise<string> {
@@ -47,16 +50,26 @@ export async function probe(file: File, device?: DeviceCapture): Promise<ProbeRe
 /**
  * Read the dial. `tap` is the 12 o'clock marker in the upright photo's pixels. With `hands`
  * (tips the user placed, same pixels), the server uses them instead of detecting the hands.
+ * With `typed`, the server takes that time as the reading (no tap needed); the photo then only
+ * provides the reference time.
  */
 export async function readDial(
   file: File,
-  tap: PhotoPoint,
+  tap: PhotoPoint | null,
   device?: DeviceCapture,
   hands?: HandTips,
+  typed?: TypedTime,
 ): Promise<ReadResult> {
   const form = uploadForm(file, device)
-  form.append('tap_x', String(tap.x))
-  form.append('tap_y', String(tap.y))
+  if (tap) {
+    form.append('tap_x', String(tap.x))
+    form.append('tap_y', String(tap.y))
+  }
+  if (typed) {
+    form.append('typed_hours', String(typed.hours))
+    form.append('typed_minutes', String(typed.minutes))
+    form.append('typed_seconds', String(typed.seconds))
+  }
   if (hands) {
     for (const role of ['hour', 'minute', 'second'] as const) {
       const tip = hands[role]

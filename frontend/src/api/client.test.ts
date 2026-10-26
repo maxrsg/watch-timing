@@ -40,6 +40,17 @@ describe('readDial', () => {
     expect(form().has('second_x')).toBe(false)
   })
 
+  it('sends a typed time without a tap', async () => {
+    const form = captureForm()
+    await readDial(file, null, undefined, undefined, { hours: 12, minutes: 5, seconds: 7.5 })
+    expect(form().has('tap_x')).toBe(false)
+    expect([form().get('typed_hours'), form().get('typed_minutes'), form().get('typed_seconds')]).toEqual([
+      '12',
+      '5',
+      '7.5',
+    ])
+  })
+
   it('sends the device fields together', async () => {
     const form = captureForm()
     const captureTime = new Date(Date.UTC(2026, 9, 20, 12, 0, 0))

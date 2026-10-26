@@ -12,8 +12,9 @@ from watchtiming.exif import CaptureExif, InvalidTimestampError, read_capture_ex
 from watchtiming.geometry import Point
 from watchtiming.imaging import InvalidImageError
 from watchtiming.limits import BodySizeLimit
-from watchtiming.measure import HandTips, Measurement, measure
+from watchtiming.measure import HandTips, Measurement, measure, measure_typed
 from watchtiming.pipeline import OverlayGeometry
+from watchtiming.reading import DialTime
 from watchtiming.reference import (
     DeviceCapture,
     FrameTiming,
@@ -97,7 +98,8 @@ class DialReadingOut(BaseModel):
     seconds_confidence: float
     needs_confirmation: bool
     reasons: list[str]
-    corrected: bool  # the hands were placed by the user, not detected
+    # None: detected. "hands": the user placed the hands. "typed": the user typed the time.
+    correction: Literal["hands", "typed"] | None
 
 
 class ReadResult(BaseModel):
@@ -247,6 +249,61 @@ def _hand_tips(
     return HandTips((hour_x, hour_y), (minute_x, minute_y), second)
 
 
+def _typed_time(
+    typed_hours: Annotated[int | None, Form(ge=1, le=12)] = None,
+    typed_minutes: Annotated[int | None, Form(ge=0, le=59)] = None,
+    typed_seconds: Annotated[float | None, Form(ge=0, lt=60, allow_inf_nan=False)] = None,
+) -> DialTime | None:
+    """The time the user typed (as the dial shows it, 1–12 h), or None when none was sent. All
+    three are required together: a deviation needs the seconds."""
+    fields = (typed_hours, typed_minutes, typed_seconds)
+    if all(f is None for f in fields):
+        return None
+    if typed_hours is None or typed_minutes is None or typed_seconds is None:
+        raise HTTPException(422, "Send the typed hours, minutes and seconds together.")
+    return DialTime(typed_hours % 12, typed_minutes, typed_seconds)
+
+
+def _reference_fields(ref: Reference | None, timestamp_error: str | None) -> dict:
+    """The ReadResult fields that describe the reference time."""
+    offset = ref.local_time.utcoffset() if ref else None
+    return dict(
+        reference_time_utc=ref.time if ref else None,
+        reference_utc_offset_minutes=(
+            round(offset.total_seconds() / 60) if offset is not None else None
+        ),
+        reference_source=ref.source if ref else None,
+        latency_correction_ms=_latency_ms(ref),
+        timestamp_error=timestamp_error,
+    )
+
+
+def _typed_result(
+    size: tuple[int, int], typed: DialTime, ref: Reference | None, timestamp_error: str | None
+) -> ReadResult:
+    """A typed time: the user's reading is taken as is, the dial isn't read."""
+    width, height = size
+    return ReadResult(
+        image_width=width,
+        image_height=height,
+        **_reference_fields(ref, timestamp_error),
+        reading=DialReadingOut(
+            hours=typed.dial_hours,
+            minutes=typed.minutes,
+            seconds=typed.seconds,
+            # The user's word, not the CV's certainty: `correction` says so.
+            confidence=1.0,
+            seconds_confidence=1.0,
+            needs_confirmation=False,
+            reasons=[],
+            correction="typed",
+        ),
+        overlay=None,
+        reading_error=None,
+        deviation_s=measure_typed(typed, ref),
+    )
+
+
 def _reading_out(m: Measurement) -> DialReadingOut | None:
     if m.reading is None:
         return None
@@ -255,16 +312,17 @@ def _reading_out(m: Measurement) -> DialReadingOut | None:
         hours=t.dial_hours, minutes=t.minutes, seconds=t.seconds,
         confidence=c.overall, seconds_confidence=c.seconds,
         needs_confirmation=m.reading.needs_confirmation,
-        reasons=list(c.reasons), corrected=m.reading.corrected,
+        reasons=list(c.reasons), correction="hands" if m.reading.corrected else None,
     )  # fmt: skip
 
 
 @app.post("/api/read")
 async def read(
     file: UploadFile,
-    tap_x: Annotated[float, Form()],
-    tap_y: Annotated[float, Form()],
     tips: Annotated[HandTips | None, Depends(_hand_tips)],
+    typed: Annotated[DialTime | None, Depends(_typed_time)],
+    tap_x: Annotated[float | None, Form()] = None,
+    tap_y: Annotated[float | None, Form()] = None,
     device_capture_time: Annotated[datetime | None, Form()] = None,
     frame_timing: Annotated[FrameTiming | None, Form()] = None,
     platform: Annotated[Platform | None, Form()] = None,
@@ -273,17 +331,24 @@ async def read(
     """Read the dial and compute the deviation from the capture time. Persists nothing (unless
     the dev-only WATCHTIMING_SAVE_UPLOADS is set, see upload_log.py).
 
-    `tap_x`, `tap_y`: the 12 o'clock marker in the upright photo's pixels. The device fields are
-    as for /api/probe; `device_capture_time` should carry the phone's local UTC offset.
+    `tap_x`, `tap_y`: the 12 o'clock marker in the upright photo's pixels (required unless the
+    time is typed). The device fields are as for /api/probe; `device_capture_time` should carry
+    the phone's local UTC offset.
 
     `hour_*`, `minute_*` (and optionally `second_*`): hand tips the user placed on the photo,
     in the same pixels. When given, they're used instead of detecting the hands.
+
+    `typed_hours` (1–12), `typed_minutes`, `typed_seconds`: the time the user read off the dial
+    and typed. When given, the dial isn't read at all (no overlay); the photo only provides the
+    reference time. Typed reads aren't kept by WATCHTIMING_SAVE_UPLOADS (it saves the CV stages).
 
     `expected_deviation_s`: the watch's predicted deviation (dial − reference, positive = fast),
     e.g. from the last measurement and the rate. With a reference time it decides which minute
     a minute hand near a minute boundary means, and which of two hands that could be swapped
     is the hour hand. It never changes the seconds read.
     """
+    if typed is not None and tips is not None:
+        raise HTTPException(422, "Send either a typed time or hand tips, not both.")
     data, exif = await _read_upload(file)
     ref, _, timestamp_error = _reference(exif, device_capture_time, frame_timing, platform)
     try:
@@ -291,21 +356,18 @@ async def read(
     except InvalidImageError as e:
         raise HTTPException(422, str(e)) from e
     width, height = pre.original_size
+    if typed is not None:
+        return _typed_result((width, height), typed, ref, timestamp_error)
+    if tap_x is None or tap_y is None:
+        raise HTTPException(422, "Tap the 12 o'clock marker (or type the time).")
     if not (0 <= tap_x < width and 0 <= tap_y < height):
         raise HTTPException(422, "The tapped point is outside the photo.")
 
     m = await run_in_threadpool(measure, pre, (tap_x, tap_y), ref, tips, expected_deviation_s)
-    offset = ref.local_time.utcoffset() if ref else None
     result = ReadResult(
         image_width=width,
         image_height=height,
-        reference_time_utc=ref.time if ref else None,
-        reference_utc_offset_minutes=(
-            round(offset.total_seconds() / 60) if offset is not None else None
-        ),
-        reference_source=ref.source if ref else None,
-        latency_correction_ms=_latency_ms(ref),
-        timestamp_error=timestamp_error,
+        **_reference_fields(ref, timestamp_error),
         reading=_reading_out(m),
         overlay=_overlay(m.overlay) if m.overlay is not None else None,
         reading_error=m.reading_error,
