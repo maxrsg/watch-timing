@@ -10,6 +10,5 @@ backend/data/
 .DS_Store
 frontend/dev-dist/
 notes/
-docs/
 debug-out/
 backend/tests/fixtures/local/
