@@ -24,6 +24,7 @@ from watchtiming.imaging import InvalidImageError
 from watchtiming.limits import BodySizeLimit
 from watchtiming.measure import HandTips, Measurement, measure, measure_typed
 from watchtiming.pipeline import OverlayGeometry
+from watchtiming.ratelimit import RateLimit, RateLimiter
 from watchtiming.reading import DialTime, deviation_seconds
 from watchtiming.reference import (
     EARLIEST_CAPTURE,
@@ -44,6 +45,9 @@ app = FastAPI(title="watch-timing")
 # Checked before parsing, so oversized uploads never reach disk. Room for multipart overhead;
 # the per-file check in the handler stays as a second layer.
 app.add_middleware(BodySizeLimit, max_bytes=MAX_UPLOAD_BYTES + 1024 * 1024)
+# Added last, so it runs first: a client over its limit is turned away before its body is read.
+rate_limiter = RateLimiter()
+app.add_middleware(RateLimit, limiter=rate_limiter)
 
 
 @app.exception_handler(store.LimitReached)

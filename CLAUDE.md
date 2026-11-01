@@ -38,7 +38,7 @@ pnpm gen:api         # regenerate TS types from backend OpenAPI (backend must be
 pnpm dlx shadcn@latest add <component>   # add a design-system component
 ```
 
-**Deploy (fly.io):** one Docker image (`Dockerfile`: pnpm builds the PWA, then the backend serves it from `frontend/dist` at `/` when `WATCHTIMING_STATIC_DIR` is set, next to `/api`). `fly.toml`: one `shared-cpu-1x` 1 GB machine that stops when idle, SQLite on the `watchtiming_data` volume at `/data`, at most 4 requests at a time (a read decodes up to 50 MP). It's a single machine on purpose: SQLite lives on one volume. There's no rate limiting yet, so set a billing alert.
+**Deploy (fly.io):** one Docker image (`Dockerfile`: pnpm builds the PWA, then the backend serves it from `frontend/dist` at `/` when `WATCHTIMING_STATIC_DIR` is set, next to `/api`). `fly.toml`: one `shared-cpu-1x` 1 GB machine that stops when idle, SQLite on the `watchtiming_data` volume at `/data`, at most 4 requests at a time (a read decodes up to 50 MP). It's a single machine on purpose: SQLite lives on one volume. Rate limits per client IP (`ratelimit.py`, in memory, since it's one process): `/api/read` and `/api/probe` 20/min, other writes 60/min, other API GETs 300/min, health and the static PWA unlimited; over a limit → 429 with `Retry-After`. Behind Fly the client is `Fly-Client-IP` (`WATCHTIMING_TRUST_FLY_IP=1`, set in the Dockerfile; never elsewhere, since anyone can send the header). Still set a billing alert.
 
 ```bash
 docker build -t watchtiming . && docker run --rm -p 8080:8080 -v "$PWD/backend/data:/data" watchtiming   # local check
@@ -47,7 +47,7 @@ fly volumes create watchtiming_data --size 1 --region arn     # once
 fly deploy --ha=false                                         # one machine
 ```
 
-**CI/CD** (`.github/workflows/ci.yml`): every push and PR runs the backend checks (`uv sync --locked`, ruff, pytest) and the frontend checks (`pnpm install --frozen-lockfile`, lint, test, build). A push to `main` that passes both deploys with `flyctl deploy --remote-only --ha=false` (secret `FLY_API_TOKEN`, a `fly tokens create deploy` token; GitHub environment `production`). The first deploy (app + volume) is done by hand. Actions are pinned to commit SHAs.
+**CI/CD** (`.github/workflows/ci.yml`): every push and PR runs the backend checks (`uv sync --locked`, ruff, pytest) and the frontend checks (`pnpm install --frozen-lockfile`, lint, test, build). A push to `main` that passes both deploys with `flyctl deploy --remote-only --ha=false` (secret `FLY_API_TOKEN`, a `fly tokens create deploy` token; GitHub environment `production`). The first deploy (app + volume) is done by hand. Actions are pinned to commit SHAs. The `production` environment only allows `main` (GitHub → Settings → Environments → Deployment branches), so a workflow edited on another branch can't deploy or read the token; the token has an expiry (`fly tokens create deploy -x 8760h`), so renew it before then.
 
 To test on a phone: `pnpm dev` already serves HTTPS on the LAN (`@vitejs/plugin-basic-ssl`, `server.host: true`). Open the printed `Network:` URL and accept the self-signed certificate. Vite proxies `/api` to the backend on `localhost:8000`, so the phone only talks to one origin.
 
@@ -60,6 +60,7 @@ backend/watchtiming/
   exif.py       # capture timestamp → UTC, with subseconds
   reference.py  # the reference time: EXIF or device clock + latency correction
   limits.py     # request body size limit (ASGI middleware)
+  ratelimit.py  # per-client rate limits (ASGI middleware, in memory)
   api.py        # FastAPI app (+ watches endpoints, X-Owner-Id; serves the built PWA in production)
   store.py      # SQLite: watches, sessions, measurements, all filtered by the owner ID
   upload_log.py # dev only: saves /api/read uploads when WATCHTIMING_SAVE_UPLOADS is set

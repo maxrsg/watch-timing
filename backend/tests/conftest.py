@@ -14,6 +14,14 @@ def tmp_db(tmp_path_factory, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def fresh_rate_limits():
+    """The API's rate limits start over for every test (they all share one client)."""
+    from watchtiming.api import rate_limiter
+
+    rate_limiter.reset()
+
+
 @pytest.fixture
 def accuracy_report() -> dict[str, str]:
     return ACCURACY_REPORT

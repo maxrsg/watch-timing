@@ -30,10 +30,12 @@ COPY --from=web /src/frontend/dist/ static/
 RUN useradd --uid 1000 --no-create-home app && mkdir /data
 # WATCHTIMING_DB lives on the Fly volume mounted at /data; past WATCHTIMING_DB_MAX_MB nothing
 # new is stored (the volume is 1 GB). Never set WATCHTIMING_SAVE_UPLOADS here: the product
-# stores no images.
+# stores no images. WATCHTIMING_TRUST_FLY_IP: rate limits go by Fly's Fly-Client-IP header
+# (only safe behind Fly's proxy, which sets it).
 ENV PATH="/app/.venv/bin:$PATH" \
     WATCHTIMING_DB=/data/watchtiming.sqlite \
     WATCHTIMING_DB_MAX_MB=500 \
+    WATCHTIMING_TRUST_FLY_IP=1 \
     WATCHTIMING_STATIC_DIR=/app/static
 EXPOSE 8080
 # Fly mounts the volume owned by root: hand it to `app`, then drop root for the server.
