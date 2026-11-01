@@ -1,11 +1,10 @@
 import { useState } from 'react'
 import { Menu, X } from 'lucide-react'
+import { Brand, NavLinks } from '@/components/NavLinks'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
-import { PAGES } from '@/lib/pages'
-import { cn } from '@/lib/utils'
 
-/** The menu button and the navigation drawer it opens. `current` is the page's hash. */
+/** The menu button and the navigation drawer it opens (phones; desktops have the sidebar). */
 export function AppMenu({ current }: { current: string }) {
   const [open, setOpen] = useState(false)
   return (
@@ -15,9 +14,11 @@ export function AppMenu({ current }: { current: string }) {
           <Menu className="size-5" />
         </Button>
       </SheetTrigger>
-      <SheetContent side="left" showCloseButton={false} className="safe-area-p gap-2">
+      <SheetContent side="left" showCloseButton={false} className="safe-area-p gap-4 bg-sidebar">
         <div className="flex items-center justify-between gap-2">
-          <SheetTitle className="text-lg">Watch timing</SheetTitle>
+          <SheetTitle asChild>
+            <Brand />
+          </SheetTitle>
           <SheetClose asChild>
             <Button variant="ghost" className="size-11" aria-label="Close menu">
               <X className="size-5" />
@@ -25,22 +26,7 @@ export function AppMenu({ current }: { current: string }) {
           </SheetClose>
         </div>
         <SheetDescription className="sr-only">Go to a page</SheetDescription>
-        <nav className="flex flex-col gap-1">
-          {PAGES.map(({ hash, label, icon: Icon }) => (
-            <a
-              key={hash}
-              href={hash || '#'}
-              aria-current={hash === current ? 'page' : undefined}
-              onClick={() => setOpen(false)}
-              className={cn(
-                'flex min-h-11 items-center gap-3 rounded-lg px-3 text-base hover:bg-muted',
-                hash === current ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground',
-              )}
-            >
-              <Icon className="size-5" /> {label}
-            </a>
-          ))}
-        </nav>
+        <NavLinks current={current} onNavigate={() => setOpen(false)} />
       </SheetContent>
     </Sheet>
   )

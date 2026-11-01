@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from 'react'
-import { ArrowLeft, LoaderCircle, Pencil, RotateCcw, ScanEye, Trash2 } from 'lucide-react'
+import { ArrowLeft, CircleCheck, LoaderCircle, Pencil, RotateCcw, ScanEye, Trash2, X } from 'lucide-react'
 import {
+  type SavedMeasurement,
   type Session,
   type WatchDetail as Watch,
   deleteMeasurement,
@@ -13,7 +14,7 @@ import { DeviationChart } from '@/components/DeviationChart'
 import { RateText } from '@/components/RateText'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardTitle } from '@/components/ui/card'
 import {
   Dialog,
   DialogClose,
@@ -28,6 +29,7 @@ import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { errorText, formatDateTime, formatDialTime, formatSignedSeconds, sourceLabel } from '@/lib/format'
 import { rememberWatch } from '@/lib/last-watch'
+import { watchHash } from '@/lib/pages'
 import { rateNotes } from '@/lib/rate'
 import { cn } from '@/lib/utils'
 
@@ -139,7 +141,15 @@ function RenameDialog({ watch, onRenamed }: { watch: Watch; onRenamed: (name: st
   )
 }
 
-function MeasurementTable({ session, onDelete }: { session: Session; onDelete: (id: number) => Promise<void> }) {
+function MeasurementTable({
+  session,
+  highlight,
+  onDelete,
+}: {
+  session: Session
+  highlight: number | null
+  onDelete: (id: number) => Promise<void>
+}) {
   return (
     <Table>
       <TableHeader>
@@ -154,7 +164,7 @@ function MeasurementTable({ session, onDelete }: { session: Session; onDelete: (
       </TableHeader>
       <TableBody>
         {session.measurements.map((m) => (
-          <TableRow key={m.id}>
+          <TableRow key={m.id} className={cn(m.id === highlight && 'bg-primary/10 hover:bg-primary/15')}>
             <TableCell>
               <div className="flex flex-col">
                 <span className="tabular-nums">{formatDateTime(Date.parse(m.reference_time_utc))}</span>
@@ -196,49 +206,104 @@ function MeasurementTable({ session, onDelete }: { session: Session; onDelete: (
 function SessionCard({
   session,
   current,
+  highlight = null,
   onDelete,
 }: {
   session: Session
   current: boolean
+  highlight?: number | null
   onDelete: (id: number) => Promise<void>
 }) {
   const notes = rateNotes(session.rate, session.measurements.length)
   return (
     <Card>
-      <CardHeader>
-        <CardDescription>
-          {current ? 'Since set' : 'Set'} {formatDateTime(Date.parse(session.started_at))}
-          {session.rate && ` · ${session.rate.n} measurements over ${(session.rate.span_hours / 24).toFixed(1)} d`}
-        </CardDescription>
-        <CardTitle>
-          <RateText rate={session.rate} className={session.rate ? 'text-3xl' : 'text-base font-normal'} />
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {notes.length > 0 && (
-          <ul className="flex flex-col gap-0.5 text-sm text-muted-foreground">
-            {notes.map((n) => (
-              <li key={n}>{n}</li>
-            ))}
-          </ul>
+      <CardContent className="flex flex-col gap-6">
+        {/* Desktops: the rate beside the chart. */}
+        <div className="flex flex-col gap-4 lg:grid lg:grid-cols-3 lg:gap-8">
+          <div className="flex flex-col gap-2">
+            <CardDescription>
+              {current ? 'Since set' : 'Set'} {formatDateTime(Date.parse(session.started_at))}
+              {session.rate &&
+                ` · ${session.rate.n} measurements over ${(session.rate.span_hours / 24).toFixed(1)} d`}
+            </CardDescription>
+            <CardTitle>
+              <RateText
+                rate={session.rate}
+                className={session.rate ? 'font-heading text-4xl lg:text-5xl' : 'text-base font-normal'}
+              />
+            </CardTitle>
+            {notes.length > 0 && (
+              <ul className="flex flex-col gap-0.5 text-sm text-muted-foreground">
+                {notes.map((n) => (
+                  <li key={n}>{n}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {session.measurements.length > 0 && (
+            <div className="lg:col-span-2">
+              <DeviationChart session={session} />
+            </div>
+          )}
+        </div>
+        {session.measurements.length > 0 && (
+          <MeasurementTable session={session} highlight={highlight} onDelete={onDelete} />
         )}
-        {session.measurements.length > 0 && <DeviationChart session={session} />}
-        {session.measurements.length > 0 && <MeasurementTable session={session} onDelete={onDelete} />}
       </CardContent>
     </Card>
   )
 }
 
+/** Confirms the measurement just saved from the Read dial page. */
+function SavedNotice({
+  watch,
+  measurement,
+  onDismiss,
+}: {
+  watch: Watch
+  measurement: SavedMeasurement
+  onDismiss: () => void
+}) {
+  const fast = measurement.deviation_s >= 0
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-primary/30 bg-primary/10 p-3 pl-4">
+      <CircleCheck className="size-5 shrink-0 text-primary" />
+      <p className="min-w-0 flex-1">
+        Saved to {watch.name}:{' '}
+        <span className={cn('font-semibold tabular-nums', fast ? 'text-fast' : 'text-slow')}>
+          {formatSignedSeconds(measurement.deviation_s)} {fast ? 'fast' : 'slow'}
+        </span>
+      </p>
+      <div className="flex gap-1">
+        <Button size="touch" variant="outline" asChild>
+          <a href="#" onClick={() => rememberWatch(watch.id)}>
+            <ScanEye /> Measure again
+          </a>
+        </Button>
+        <Button variant="ghost" className="size-11" aria-label="Dismiss" onClick={onDismiss}>
+          <X className="size-5" />
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 /** One watch: its current session's rate, chart and measurements, and earlier sessions. */
-export function WatchDetail({ id }: { id: number }) {
+export function WatchDetail({ id, saved = null }: { id: number; saved?: number | null }) {
   const [watch, setWatch] = useState<Watch | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [justSaved, setJustSaved] = useState(saved)
 
   useEffect(() => {
     getWatch(id)
       .then(setWatch)
       .catch((e) => setError(errorText(e)))
   }, [id])
+
+  useEffect(() => {
+    // The notice is for arriving from a save; a reload or a shared link shouldn't show it again.
+    if (saved !== null) history.replaceState(null, '', watchHash(id))
+  }, [id, saved])
 
   async function run(action: () => Promise<unknown>) {
     setError(null)
@@ -257,7 +322,7 @@ export function WatchDetail({ id }: { id: number }) {
 
   if (!watch) {
     return (
-      <div className="mx-auto flex w-full max-w-xl flex-col gap-4">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
         <a href="#watches" className="flex min-h-11 items-center gap-2 text-sm text-muted-foreground">
           <ArrowLeft className="size-4" /> All watches
         </a>
@@ -273,13 +338,16 @@ export function WatchDetail({ id }: { id: number }) {
   }
 
   const [current, ...earlier] = watch.sessions
+  const savedMeasurement = current?.measurements.find((m) => m.id === justSaved) ?? null
   return (
-    <div className="mx-auto flex w-full max-w-xl flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 lg:gap-6">
       <a href="#watches" className="flex min-h-11 items-center gap-2 text-sm text-muted-foreground">
         <ArrowLeft className="size-4" /> All watches
       </a>
       <div className="flex items-center gap-1">
-        <h2 className="min-w-0 flex-1 truncate font-heading text-2xl font-semibold">{watch.name}</h2>
+        <h2 className="min-w-0 flex-1 truncate font-heading text-3xl font-semibold tracking-tight lg:text-4xl">
+          {watch.name}
+        </h2>
         <RenameDialog watch={watch} onRenamed={(name) => setWatch({ ...watch, name })} />
         <ConfirmDialog
           trigger={
@@ -300,6 +368,9 @@ export function WatchDetail({ id }: { id: number }) {
         />
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
+      {savedMeasurement && (
+        <SavedNotice watch={watch} measurement={savedMeasurement} onDismiss={() => setJustSaved(null)} />
+      )}
 
       <div className="flex flex-wrap gap-2">
         <Button size="touch" asChild>
@@ -320,8 +391,10 @@ export function WatchDetail({ id }: { id: number }) {
         />
       </div>
 
-      {current && <SessionCard session={current} current onDelete={removeMeasurement} />}
-      {earlier.length > 0 && <h3 className="font-heading text-lg font-semibold">Earlier series</h3>}
+      {current && (
+        <SessionCard session={current} current highlight={savedMeasurement?.id} onDelete={removeMeasurement} />
+      )}
+      {earlier.length > 0 && <h3 className="font-heading text-xl font-semibold">Earlier series</h3>}
       {earlier.map((s) => (
         <SessionCard key={s.id} session={s} current={false} onDelete={removeMeasurement} />
       ))}

@@ -2,7 +2,6 @@ import { toLocalIsoString } from '@/lib/format'
 import { ownerId } from '@/lib/owner'
 import type { components } from './schema'
 
-export type ProbeResult = components['schemas']['ProbeResult']
 export type ExifTags = components['schemas']['ExifTags']
 export type ServerTime = components['schemas']['ServerTime']
 export type FrameTiming = components['schemas']['FrameTiming']
@@ -39,19 +38,6 @@ async function errorMessage(res: Response): Promise<string> {
     // Not JSON; fall through.
   }
   return `Request failed (${res.status})`
-}
-
-/**
- * Upload the original file bytes unchanged (no canvas, no re-encoding).
- * `device` is only for frames from the in-app camera, which have no EXIF: the device-clock
- * time of the frame, which frame timestamp it is, and the platform. The server calibrates the
- * camera latency per (platform, timing).
- */
-export async function probe(file: File, device?: DeviceCapture): Promise<ProbeResult> {
-  const form = uploadForm(file, device)
-  const res = await fetch('/api/probe', { method: 'POST', body: form })
-  if (!res.ok) throw new Error(await errorMessage(res))
-  return res.json()
 }
 
 /**
@@ -97,6 +83,11 @@ export async function readDial(
   return res.json()
 }
 
+/**
+ * The original file bytes, unchanged (no canvas, no re-encoding). `device` is only for frames
+ * from the in-app camera, which have no EXIF: the device-clock time of the frame, which frame
+ * timestamp it is, and the platform. The server calibrates the camera latency per (platform, timing).
+ */
 function uploadForm(file: File, device?: DeviceCapture): FormData {
   const form = new FormData()
   form.append('file', file, file.name)

@@ -74,13 +74,15 @@ export function LiveCamera({
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1">
       {/* Shows the centered square, as the photo view does at first; the whole frame is captured. */}
-      <div className="preview-square relative overflow-hidden rounded-lg bg-muted">
-        <video ref={videoRef} className="size-full object-cover" playsInline muted />
-        {!ready && !error && (
-          <LoaderCircle className="absolute inset-0 m-auto animate-spin text-muted-foreground" />
-        )}
+      <div className="lg:min-h-0 lg:flex-1 lg:square-fit">
+        <div className="preview-square relative overflow-hidden rounded-lg bg-muted">
+          <video ref={videoRef} className="size-full object-cover" playsInline muted />
+          {!ready && !error && (
+            <LoaderCircle className="absolute inset-0 m-auto animate-spin text-muted-foreground" />
+          )}
+        </div>
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex gap-2">

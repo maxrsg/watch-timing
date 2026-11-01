@@ -22,6 +22,9 @@ export default defineConfig({
         short_name: 'Watch Timing',
         description: "Track a mechanical watch's accuracy from dial photos",
         display: 'standalone',
+        // The ink background of the dark theme (index.css --background).
+        theme_color: '#070e1a',
+        background_color: '#070e1a',
         start_url: '/',
         icons: [{ src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
       },

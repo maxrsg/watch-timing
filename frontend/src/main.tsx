@@ -17,11 +17,8 @@ if (import.meta.env.DEV && 'serviceWorker' in navigator) {
     .then((registrations) => registrations.forEach((r) => void r.unregister()))
 }
 
-// Follow the system light/dark setting via the `.dark` class.
-const dark = window.matchMedia('(prefers-color-scheme: dark)')
-const applyTheme = () => document.documentElement.classList.toggle('dark', dark.matches)
-applyTheme()
-dark.addEventListener('change', applyTheme)
+// The app is dark only; the class turns on the components' `dark:` styles.
+document.documentElement.classList.add('dark')
 
 createRoot(document.getElementById('root')!, {
   // A render error would otherwise unmount everything and leave a blank page.

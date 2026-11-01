@@ -24,19 +24,33 @@ export function parseTypedTime(fields: TypedTimeFields): TypedTime | string {
 }
 
 /**
+ * What the current reading already says (hour, minute and its seconds if it has them). A field
+ * the user leaves empty takes this, so they only type what's off. Never from the reference time:
+ * a guessed minute or second would end up in the deviation.
+ */
+export function typedTimeDefaults(result: ReadResult | null): Partial<TypedTimeFields> {
+  const r = result?.reading
+  if (!r) return {}
+  return {
+    hours: String(r.hours),
+    minutes: String(r.minutes).padStart(2, '0'),
+    ...(r.seconds !== null && { seconds: r.seconds.toFixed(1) }),
+  }
+}
+
+/** The typed fields, with the empty ones taken from `defaults`. */
+export function withDefaults(fields: TypedTimeFields, defaults: Partial<TypedTimeFields>): TypedTimeFields {
+  const pick = (key: keyof TypedTimeFields) => (fields[key].trim() ? fields[key] : (defaults[key] ?? ''))
+  return { hours: pick('hours'), minutes: pick('minutes'), seconds: pick('seconds') }
+}
+
+/**
  * The form's placeholders (the fields themselves start empty): the current reading, or else the
  * hour and minute of the photo's reference time. The seconds placeholder is a reading's seconds
  * or a format hint, never the reference's: they're what the deviation is made of.
  */
 export function typedTimePlaceholders(result: ReadResult | null): TypedTimeFields {
-  const r = result?.reading
-  if (r) {
-    return {
-      hours: String(r.hours),
-      minutes: String(r.minutes).padStart(2, '0'),
-      seconds: r.seconds === null ? HINT.seconds : r.seconds.toFixed(1),
-    }
-  }
+  if (result?.reading) return { ...HINT, ...typedTimeDefaults(result) }
   if (result?.reference_time_utc && result.reference_utc_offset_minutes !== null) {
     const wall = new Date(Date.parse(result.reference_time_utc) + result.reference_utc_offset_minutes * 60_000)
     return {

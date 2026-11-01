@@ -4,7 +4,7 @@ import type { TypedTime } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { type TypedTimeFields, parseTypedTime } from '@/lib/typed-time'
+import { type TypedTimeFields, parseTypedTime, withDefaults } from '@/lib/typed-time'
 
 const FIELDS = [
   { key: 'hours', label: 'Hours', inputMode: 'numeric' },
@@ -16,14 +16,17 @@ const EMPTY: TypedTimeFields = { hours: '', minutes: '', seconds: '' }
 
 /**
  * Type the time the watch shows in the photo: always on offer, for when the reading isn't good
- * enough. The fields start empty; `placeholders` shows the current reading for reference.
+ * enough. The fields start empty; `placeholders` shows the current reading for reference, and
+ * a field left empty takes its value from `defaults` (what the reading already gives).
  */
 export function TypedTimeForm({
   placeholders,
+  defaults,
   busy,
   onSubmit,
 }: {
   placeholders: TypedTimeFields
+  defaults: Partial<TypedTimeFields>
   busy: boolean
   onSubmit: (time: TypedTime) => void
 }) {
@@ -37,7 +40,7 @@ export function TypedTimeForm({
       noValidate
       onSubmit={(e) => {
         e.preventDefault()
-        const time = parseTypedTime(fields)
+        const time = parseTypedTime(withDefaults(fields, defaults))
         if (typeof time === 'string') setError(time)
         else onSubmit(time)
       }}
@@ -46,7 +49,11 @@ export function TypedTimeForm({
         <p className="font-medium">
           Or type the time <span className="font-normal text-muted-foreground">(optional)</span>
         </p>
-        <p className="text-sm text-muted-foreground">If the reading is off, type what the dial shows.</p>
+        <p className="text-sm text-muted-foreground">
+          {Object.keys(defaults).length > 0
+            ? 'Type only what the reading got wrong; empty fields keep the reading.'
+            : 'If the reading is off, type what the dial shows.'}
+        </p>
       </div>
       <div className="grid grid-cols-3 gap-2">
         {FIELDS.map(({ key, label, inputMode }) => (

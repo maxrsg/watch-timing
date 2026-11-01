@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ReadResult } from '@/api/client'
-import { typedTimePlaceholders, parseTypedTime } from './typed-time'
+import { parseTypedTime, typedTimeDefaults, typedTimePlaceholders, withDefaults } from './typed-time'
 
 const fields = (hours: string, minutes: string, seconds: string) => ({ hours, minutes, seconds })
 
@@ -70,5 +70,36 @@ describe('typedTimePlaceholders', () => {
   it("starts from the reference's hour and minute in the watch's zone, never its seconds", () => {
     const r = result({ reference_time_utc: '2026-10-18T22:05:30.000Z', reference_utc_offset_minutes: 120 })
     expect(typedTimePlaceholders(r)).toEqual(fields('12', '05', 'ss.s'))
+  })
+})
+
+describe('typedTimeDefaults and withDefaults', () => {
+  const reading = {
+    hours: 10,
+    minutes: 8,
+    seconds: null,
+    confidence: 0.5,
+    seconds_confidence: 0,
+    needs_confirmation: true,
+    reasons: [],
+    correction: null,
+  }
+
+  it("fills the empty fields from the reading, so only what's off is typed", () => {
+    const defaults = typedTimeDefaults(result({ reading }))
+    expect(parseTypedTime(withDefaults(fields('', '', '37.5'), defaults))).toEqual({ hours: 10, minutes: 8, seconds: 37.5 })
+    expect(parseTypedTime(withDefaults(fields('', '09', '1'), defaults))).toEqual({ hours: 10, minutes: 9, seconds: 1 })
+  })
+
+  it('takes read seconds too, but never makes up missing ones', () => {
+    const withSeconds = typedTimeDefaults(result({ reading: { ...reading, seconds: 37.04 } }))
+    expect(parseTypedTime(withDefaults(fields('', '09', ''), withSeconds))).toEqual({ hours: 10, minutes: 9, seconds: 37 })
+    expect(parseTypedTime(withDefaults(fields('', '09', ''), typedTimeDefaults(result({ reading }))))).toMatch(/Enter/)
+  })
+
+  it('takes nothing from the reference time alone', () => {
+    const r = result({ reference_time_utc: '2026-10-18T22:05:30.000Z', reference_utc_offset_minutes: 120 })
+    expect(typedTimeDefaults(r)).toEqual({})
+    expect(typedTimeDefaults(null)).toEqual({})
   })
 })

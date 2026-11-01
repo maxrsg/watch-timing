@@ -25,7 +25,7 @@ import { initialTip, initialTips } from '@/lib/hands'
 import { lastWatchId, rememberWatch } from '@/lib/last-watch'
 import { measurementFromResult } from '@/lib/measurement'
 import { watchHash } from '@/lib/pages'
-import { typedTimePlaceholders } from '@/lib/typed-time'
+import { typedTimeDefaults, typedTimePlaceholders } from '@/lib/typed-time'
 import { cn } from '@/lib/utils'
 
 type Photo = { file: File; url: string; device?: DeviceCapture }
@@ -36,7 +36,7 @@ type Mode = { kind: 'view' } | { kind: 'hands'; tips: HandTips }
 const BADGE = { hands: 'hands placed by you', typed: 'typed by you' } as const
 
 /** Saving the reading to the chosen watch. */
-type SaveState = { kind: 'idle' } | { kind: 'saving' } | { kind: 'saved'; watchId: number } | { kind: 'error'; message: string }
+type SaveState = { kind: 'idle' } | { kind: 'saving' } | { kind: 'error'; message: string }
 
 /** The watches to choose from and the chosen one (remembered per browser). */
 function useWatches() {
@@ -74,16 +74,6 @@ function SaveReading({
   if (!watch) {
     return <p className="text-sm text-muted-foreground">Choose a watch above to save this reading.</p>
   }
-  if (state.kind === 'saved') {
-    return (
-      <p className="flex flex-wrap items-center gap-2 text-sm">
-        <Check className="size-4 text-primary" /> Saved to {watch.name}.{' '}
-        <a href={watchHash(state.watchId)} className="font-medium underline underline-offset-4">
-          See its rate
-        </a>
-      </p>
-    )
-  }
   return (
     <div className="flex flex-col gap-1.5">
       <Button size="touch" onClick={onSave} disabled={state.kind === 'saving'}>
@@ -115,7 +105,7 @@ function Result({ result }: { result: ReadResult }) {
       <CardHeader>
         <CardTitle className="flex flex-wrap items-center gap-2">
           {r ? (
-            <span className="font-heading text-3xl tabular-nums">
+            <span className="font-heading text-4xl tabular-nums lg:text-5xl">
               {formatDialTime(r.hours, r.minutes, r.seconds)}
             </span>
           ) : (
@@ -123,8 +113,12 @@ function Result({ result }: { result: ReadResult }) {
               <CircleAlert className="text-destructive" /> Couldn't read the dial
             </>
           )}
-          {r?.needs_confirmation && <Badge variant="destructive">check this reading</Badge>}
-          {r?.correction && <Badge variant="secondary">{BADGE[r.correction]}</Badge>}
+          {r?.needs_confirmation && <Badge variant="destructive" className="font-sans">
+              check this reading
+            </Badge>}
+          {r?.correction && <Badge variant="secondary" className="font-sans">
+              {BADGE[r.correction]}
+            </Badge>}
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3 text-sm">
@@ -178,7 +172,7 @@ function Result({ result }: { result: ReadResult }) {
   )
 }
 
-/** Take or pick a photo, tap 12 o'clock, and see what the backend reads. Persists nothing. */
+/** Take or pick a photo, tap 12 o'clock, see what the backend reads, and save it to a watch. */
 export function ReadTest() {
   const [photo, setPhoto] = useState<Photo | null>(null)
   const [tap, setTap] = useState<PhotoPoint | null>(null)
@@ -235,8 +229,9 @@ export function ReadTest() {
     if (!watch || !measurement) return
     setSave({ kind: 'saving' })
     try {
-      await saveMeasurement(watch.id, measurement)
-      setSave({ kind: 'saved', watchId: watch.id })
+      const saved = await saveMeasurement(watch.id, measurement)
+      // On to the watch, where the new measurement is highlighted.
+      window.location.hash = watchHash(watch.id, saved.id)
     } catch (e) {
       setSave({ kind: 'error', message: errorText(e) })
     }
@@ -247,97 +242,105 @@ export function ReadTest() {
   const tips = mode.kind === 'hands' ? mode.tips : null
 
   return (
-    <div className="mx-auto flex w-full max-w-xl flex-col gap-4">
-      {watches && (
-        <WatchPicker
-          watches={watches}
-          value={watch?.id ?? null}
-          onChange={(id) => {
-            choose(id)
-            setSave({ kind: 'idle' })
-          }}
-        />
-      )}
-      <p className="text-sm text-muted-foreground">{instruction(photo, result, mode)}</p>
+    // Phones: picker, photo, then the reading. Desktops: the photo left, everything else right,
+    // filling the screen's height; a long reading scrolls in its column.
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 lg:grid lg:min-h-0 lg:flex-1 lg:grid-cols-5 lg:grid-rows-1 lg:gap-8">
+      <div className="order-2 flex flex-col gap-3 lg:order-none lg:col-span-3 lg:min-h-0">
+        {!photo && <CapturePicker onFrame={fromFrame} onFile={(f) => start(f)} />}
+        {photo && (
+          <div className="lg:min-h-0 lg:flex-1 lg:square-fit">
+            <PhotoOverlay
+              src={photo.url}
+              tap={tap}
+              overlay={overlay}
+              onTap={(point) => void read(point)}
+              tips={tips}
+              onMoveTip={(role, point) =>
+                setMode((m) => (m.kind === 'hands' ? { ...m, tips: { ...m.tips, [role]: point } } : m))
+              }
+            />
+          </div>
+        )}
+        {photo && tips && tap && (
+          <div className="flex flex-wrap gap-2">
+            <Button size="touch" onClick={() => void read(tap, tips)} disabled={busy}>
+              <Check /> Read with these hands
+            </Button>
+            <Button
+              size="touch"
+              variant="outline"
+              onClick={() => {
+                if (!overlay) return
+                const second = tips.second ? null : initialTip(overlay, 'second')
+                setMode({ kind: 'hands', tips: { ...tips, second } })
+              }}
+            >
+              {tips.second ? 'No seconds hand' : 'Add seconds hand'}
+            </Button>
+            <Button size="touch" variant="ghost" onClick={() => setMode({ kind: 'view' })} aria-label="Stop correcting">
+              <X />
+            </Button>
+          </div>
+        )}
+      </div>
 
-      {!photo && <CapturePicker onFrame={fromFrame} onFile={(f) => start(f)} />}
-
-      {photo && (
-        <>
-          <PhotoOverlay
-            src={photo.url}
-            tap={tap}
-            overlay={overlay}
-            onTap={(point) => void read(point)}
-            tips={tips}
-            onMoveTip={(role, point) =>
-              setMode((m) => (m.kind === 'hands' ? { ...m, tips: { ...m.tips, [role]: point } } : m))
-            }
-          />
-          {tips && tap && (
-            <div className="flex flex-wrap gap-2">
-              <Button size="touch" onClick={() => void read(tap, tips)} disabled={busy}>
-                <Check /> Read with these hands
-              </Button>
-              <Button
-                size="touch"
-                variant="outline"
-                onClick={() => {
-                  if (!overlay) return
-                  const second = tips.second ? null : initialTip(overlay, 'second')
-                  setMode({ kind: 'hands', tips: { ...tips, second } })
-                }}
-              >
-                {tips.second ? 'No seconds hand' : 'Add seconds hand'}
-              </Button>
-              <Button
-                size="touch"
-                variant="ghost"
-                onClick={() => setMode({ kind: 'view' })}
-                aria-label="Stop correcting"
-              >
-                <X />
-              </Button>
-            </div>
-          )}
-          {busy && (
-            <p className="flex items-center gap-2 text-sm text-muted-foreground">
-              <LoaderCircle className="animate-spin" /> Reading the dial…
-            </p>
-          )}
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          {result && !busy && mode.kind === 'view' && (
-            <>
-              <Result result={result} />
-              <SaveReading result={result} tap={tap} watch={watch} state={save} onSave={() => void saveReading()} />
-            </>
-          )}
-          {mode.kind === 'view' && (
-            <TypedTimeForm
-              key={photo.url}
-              placeholders={typedTimePlaceholders(result)}
-              busy={busy}
-              onSubmit={(typed) => void read(null, undefined, typed)}
+      <div className="contents lg:col-span-2 lg:flex lg:min-h-0 lg:flex-col lg:gap-4 lg:overflow-y-auto">
+        <div className="order-1 flex flex-col gap-3 lg:order-none">
+          {watches && (
+            <WatchPicker
+              watches={watches}
+              value={watch?.id ?? null}
+              onChange={(id) => {
+                choose(id)
+                setSave({ kind: 'idle' })
+              }}
             />
           )}
-          {!busy && mode.kind === 'view' && (
-            <div className="flex flex-wrap gap-2">
-              {result && overlay && tap && (
-                <Button
-                  size="touch"
-                  variant={result.reading?.needs_confirmation || !result.reading ? 'default' : 'outline'}
-                  onClick={() => setMode({ kind: 'hands', tips: initialTips(overlay) })}
-                >
-                  <Move /> {result.reading ? 'Correct the hands' : 'Place the hands'}
+          <p className="text-sm text-muted-foreground">{instruction(photo, result, mode)}</p>
+        </div>
+
+        {photo && (
+          <div className="order-3 flex flex-col gap-4 lg:order-none">
+            {busy && (
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <LoaderCircle className="animate-spin" /> Reading the dial…
+              </p>
+            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            {result && !busy && mode.kind === 'view' && (
+              <>
+                <Result result={result} />
+                <SaveReading result={result} tap={tap} watch={watch} state={save} onSave={() => void saveReading()} />
+              </>
+            )}
+            {mode.kind === 'view' && (
+              <TypedTimeForm
+                key={photo.url}
+                placeholders={typedTimePlaceholders(result)}
+                defaults={typedTimeDefaults(result)}
+                busy={busy}
+                onSubmit={(typed) => void read(null, undefined, typed)}
+              />
+            )}
+            {!busy && mode.kind === 'view' && (
+              <div className="flex flex-wrap gap-2">
+                {result && overlay && tap && (
+                  <Button
+                    size="touch"
+                    variant={result.reading?.needs_confirmation || !result.reading ? 'default' : 'outline'}
+                    onClick={() => setMode({ kind: 'hands', tips: initialTips(overlay) })}
+                  >
+                    <Move /> {result.reading ? 'Correct the hands' : 'Place the hands'}
+                  </Button>
+                )}
+                <Button size="touch" variant="outline" onClick={() => reset()}>
+                  <RotateCcw /> New photo
                 </Button>
-              )}
-              <Button size="touch" variant="outline" onClick={() => reset()}>
-                <RotateCcw /> New photo
-              </Button>
-            </div>
-          )}
-        </>
-      )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

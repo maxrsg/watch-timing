@@ -80,18 +80,21 @@ function NewWatchForm({ onCreated }: { onCreated: (watch: WatchSummary) => void 
 function WatchCard({ watch }: { watch: WatchSummary }) {
   const latest = watch.latest_deviation_s
   return (
-    <a href={watchHash(watch.id)} className="block rounded-xl focus-visible:ring-3 focus-visible:ring-ring/50">
-      <Card className="hover:bg-muted">
-        <CardContent className="flex min-h-11 items-center gap-3">
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="truncate font-medium">{watch.name}</span>
-            <span className="text-sm text-muted-foreground tabular-nums">
-              {watch.measurement_count === 1 ? '1 measurement' : `${watch.measurement_count} measurements`}
-              {latest !== null && ` · last ${formatSignedSeconds(latest)}`}
-            </span>
+    <a
+      href={watchHash(watch.id)}
+      className="group block rounded-xl focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+    >
+      <Card className="h-full transition-colors group-hover:bg-accent group-hover:ring-primary/30">
+        <CardContent className="flex h-full flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate font-heading text-lg font-semibold">{watch.name}</span>
+            <ChevronRight className="size-5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
           </div>
-          <RateText rate={watch.rate} className="text-lg" />
-          <ChevronRight className="size-5 text-muted-foreground" />
+          <RateText rate={watch.rate} className={watch.rate ? 'font-heading text-3xl' : 'text-sm'} />
+          <span className="mt-auto text-sm text-muted-foreground tabular-nums">
+            {watch.measurement_count === 1 ? '1 measurement' : `${watch.measurement_count} measurements`}
+            {latest !== null && ` · last ${formatSignedSeconds(latest)}`}
+          </span>
         </CardContent>
       </Card>
     </a>
@@ -110,27 +113,33 @@ export function WatchList() {
   }, [])
 
   return (
-    <div className="mx-auto flex w-full max-w-xl flex-col gap-4">
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {!watches && !error && (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <LoaderCircle className="animate-spin" /> Loading watches…
-        </p>
-      )}
-      {watches && watches.length === 0 && (
-        <p className="text-sm text-muted-foreground">
-          Add a watch, then save readings to it to see how fast or slow it runs.
-        </p>
-      )}
-      {watches && watches.length > 0 && (
-        <div className="flex flex-col gap-2">
-          {watches.map((w) => (
-            <WatchCard key={w.id} watch={w} />
-          ))}
-        </div>
-      )}
-      <NewWatchForm onCreated={(w) => setWatches((ws) => [...(ws ?? []), w])} />
-      {watches && watches.length > 0 && <OwnerLink />}
+    <div className="mx-auto grid w-full max-w-6xl gap-6 lg:grid-cols-3 lg:items-start lg:gap-8">
+      <div className="flex flex-col gap-4 lg:col-span-2">
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        {!watches && !error && (
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <LoaderCircle className="animate-spin" /> Loading watches…
+          </p>
+        )}
+        {watches && watches.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            Add a watch, then save readings to it to see how fast or slow it runs.
+          </p>
+        )}
+        {watches && watches.length > 0 && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {watches.map((w) => (
+              <WatchCard key={w.id} watch={w} />
+            ))}
+          </div>
+        )}
+      </div>
+      <Card className="lg:sticky lg:top-8">
+        <CardContent className="flex flex-col gap-6">
+          <NewWatchForm onCreated={(w) => setWatches((ws) => [...(ws ?? []), w])} />
+          {watches && watches.length > 0 && <OwnerLink />}
+        </CardContent>
+      </Card>
     </div>
   )
 }

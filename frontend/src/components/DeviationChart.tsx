@@ -48,8 +48,8 @@ export function DeviationChart({ session }: { session: Session }) {
     : []
 
   return (
-    <ChartContainer config={config} className="aspect-auto h-56 w-full">
-      <ComposedChart margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+    <ChartContainer config={config} className="aspect-auto h-56 w-full lg:h-72">
+      <ComposedChart margin={{ top: 16, right: 8, bottom: 0, left: 0 }}>
         <CartesianGrid vertical={false} />
         <XAxis
           dataKey="t"
@@ -64,7 +64,7 @@ export function DeviationChart({ session }: { session: Session }) {
         <YAxis
           dataKey="deviation"
           type="number"
-          width={52}
+          width={64}
           tickFormatter={(s: number) => formatSignedSeconds(s)}
           tickLine={false}
           axisLine={false}

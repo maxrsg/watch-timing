@@ -1,4 +1,4 @@
-import { Clock, FlaskConical, type LucideIcon, ScanEye, Watch } from 'lucide-react'
+import { type LucideIcon, ScanEye, Watch } from 'lucide-react'
 
 export type Page = { hash: string; label: string; icon: LucideIcon }
 
@@ -6,8 +6,6 @@ export type Page = { hash: string; label: string; icon: LucideIcon }
 export const PAGES: Page[] = [
   { hash: '', label: 'Read dial', icon: ScanEye },
   { hash: '#watches', label: 'Watches', icon: Watch },
-  { hash: '#probe', label: 'Timestamp check', icon: FlaskConical },
-  { hash: '#clock', label: 'Reference clock', icon: Clock },
 ]
 
 /** A location hash split into its page ("#watches"), the path after it and its query. */
@@ -33,6 +31,13 @@ export function watchIdFor(hash: string): number | null {
   return base === '#watches' && Number.isInteger(id) && id > 0 ? id : null
 }
 
-export function watchHash(id: number): string {
-  return `#watches/${id}`
+/** A watch's page; with `saved`, the measurement just saved to it (highlighted there). */
+export function watchHash(id: number, saved?: number): string {
+  return saved === undefined ? `#watches/${id}` : `#watches/${id}?saved=${saved}`
+}
+
+/** The measurement a "#watches/<id>?saved=<mid>" hash points at, or null. */
+export function savedMeasurementFor(hash: string): number | null {
+  const id = Number(parseHash(hash).query.get('saved'))
+  return watchIdFor(hash) !== null && Number.isInteger(id) && id > 0 ? id : null
 }
