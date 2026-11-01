@@ -13,6 +13,13 @@ from pathlib import Path
 
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "watchtiming.sqlite"
 
+# Anyone can make up an owner ID, so these only bound one owner; the database size bounds all
+# of them (the volume is small and SQLite stops working when it's full).
+MAX_WATCHES_PER_OWNER = 50
+MAX_SESSIONS_PER_WATCH = 200
+MAX_MEASUREMENTS_PER_WATCH = 5000
+DEFAULT_DB_MAX_MB = 500
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS watches (
     id INTEGER PRIMARY KEY,
@@ -55,6 +62,29 @@ CREATE INDEX IF NOT EXISTS measurements_session ON measurements (session_id);
 def db_path() -> Path:
     """`WATCHTIMING_DB`, else backend/data/watchtiming.sqlite."""
     return Path(os.environ.get("WATCHTIMING_DB") or DEFAULT_DB)
+
+
+def db_max_bytes() -> int:
+    """`WATCHTIMING_DB_MAX_MB`, else 500 MB: past it, nothing new is stored."""
+    return int(os.environ.get("WATCHTIMING_DB_MAX_MB") or DEFAULT_DB_MAX_MB) * 1024 * 1024
+
+
+class LimitReached(Exception):
+    """One owner's or watch's cap is reached. The message is for the user."""
+
+
+class StorageFull(Exception):
+    """The database has reached its size limit."""
+
+
+def _count(conn: sqlite3.Connection, sql: str, *args: object) -> int:
+    return conn.execute(sql, args).fetchone()[0]
+
+
+def _check_room(conn: sqlite3.Connection) -> None:
+    size = _count(conn, "PRAGMA page_count") * _count(conn, "PRAGMA page_size")
+    if size >= db_max_bytes():
+        raise StorageFull
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -141,6 +171,11 @@ def _measurement(row: sqlite3.Row) -> SavedMeasurement:
 
 def create_watch(conn: sqlite3.Connection, owner: str, name: str, now: datetime) -> Watch:
     """A new watch with its first session (starting now)."""
+    _check_room(conn)
+    if _count(conn, "SELECT COUNT(*) FROM watches WHERE owner_id = ?", owner) >= (
+        MAX_WATCHES_PER_OWNER
+    ):
+        raise LimitReached(f"You can track at most {MAX_WATCHES_PER_OWNER} watches.")
     with conn:
         cur = conn.execute(
             "INSERT INTO watches (owner_id, name, created_at) VALUES (?, ?, ?)",
@@ -185,6 +220,11 @@ def delete_watch(conn: sqlite3.Connection, owner: str, watch_id: int) -> bool:
 
 def start_session(conn: sqlite3.Connection, watch: Watch, now: datetime) -> Session:
     """The watch was set: later measurements go to this new session."""
+    _check_room(conn)
+    if _count(conn, "SELECT COUNT(*) FROM sessions WHERE watch_id = ?", watch.id) >= (
+        MAX_SESSIONS_PER_WATCH
+    ):
+        raise LimitReached(f"A watch can have at most {MAX_SESSIONS_PER_WATCH} sessions.")
     with conn:
         cur = conn.execute(
             "INSERT INTO sessions (watch_id, started_at) VALUES (?, ?)", (watch.id, _iso(now))
@@ -208,6 +248,15 @@ def current_session(conn: sqlite3.Connection, watch: Watch) -> Session:
 def add_measurement(
     conn: sqlite3.Connection, session: Session, data: MeasurementData, now: datetime
 ) -> SavedMeasurement:
+    _check_room(conn)
+    count = _count(
+        conn,
+        "SELECT COUNT(*) FROM measurements WHERE session_id IN "
+        "(SELECT id FROM sessions WHERE watch_id = ?)",
+        session.watch_id,
+    )
+    if count >= MAX_MEASUREMENTS_PER_WATCH:
+        raise LimitReached(f"A watch can have at most {MAX_MEASUREMENTS_PER_WATCH} measurements.")
     values = list(astuple(data))
     values[0] = _iso(data.reference_time_utc)
     columns = ", ".join(["session_id", "created_at", *_DATA_COLUMNS])

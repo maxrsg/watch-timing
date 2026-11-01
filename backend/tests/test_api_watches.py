@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.test_api_read import DIAL, photo
+from watchtiming import store
 from watchtiming.api import app
 
 client = TestClient(app)
@@ -193,3 +194,73 @@ def test_a_read_for_someone_elses_watch_is_rejected():
     assert read_with_watch(watch_id, headers=owner()).status_code == 404
     assert read_with_watch(watch_id, headers={}).status_code == 422
     assert read_with_watch(None, headers={}).status_code == 200
+
+
+# --- Limits: one owner's caps, and the database size for everyone ---------------------------
+
+
+def test_watches_per_owner_are_capped(monkeypatch):
+    monkeypatch.setattr(store, "MAX_WATCHES_PER_OWNER", 2)
+    me = owner()
+    new_watch(me)
+    new_watch(me)
+    res = client.post("/api/watches", json={"name": "Third"}, headers=me)
+    assert res.status_code == 409
+    assert res.json()["detail"] == "You can track at most 2 watches."
+    new_watch(owner())  # another owner has their own cap
+
+
+def test_sessions_per_watch_are_capped(monkeypatch):
+    monkeypatch.setattr(store, "MAX_SESSIONS_PER_WATCH", 2)
+    watch_id = new_watch()  # its first session
+    assert client.post(f"/api/watches/{watch_id}/sessions", headers=ME).status_code == 201
+    res = client.post(f"/api/watches/{watch_id}/sessions", headers=ME)
+    assert res.status_code == 409
+    assert "at most 2 sessions" in res.json()["detail"]
+
+
+def test_measurements_per_watch_are_capped_across_sessions(monkeypatch):
+    monkeypatch.setattr(store, "MAX_MEASUREMENTS_PER_WATCH", 2)
+    watch_id = new_watch()
+    assert save(watch_id, reading(REF, 1.0)).status_code == 201
+    client.post(f"/api/watches/{watch_id}/sessions", headers=ME)
+    assert save(watch_id, reading(REF + timedelta(hours=1), 1.0)).status_code == 201
+    res = save(watch_id, reading(REF + timedelta(hours=2), 1.0))
+    assert res.status_code == 409
+    assert "at most 2 measurements" in res.json()["detail"]
+    # Deleting one makes room again.
+    first = client.get(f"/api/watches/{watch_id}", headers=ME).json()["sessions"][0]
+    mid = first["measurements"][0]["id"]
+    res = client.delete(f"/api/watches/{watch_id}/measurements/{mid}", headers=ME)
+    assert res.status_code == 204
+    assert save(watch_id, reading(REF + timedelta(hours=2), 1.0)).status_code == 201
+
+
+def test_a_full_database_takes_nothing_new(monkeypatch):
+    watch_id = new_watch()
+    monkeypatch.setenv("WATCHTIMING_DB_MAX_MB", "0")
+    for res in (
+        client.post("/api/watches", json={"name": "New"}, headers=ME),
+        client.post(f"/api/watches/{watch_id}/sessions", headers=ME),
+        save(watch_id, reading(REF, 1.0)),
+    ):
+        assert res.status_code == 507
+        assert "storage is full" in res.json()["detail"]
+    # Reading, renaming and deleting still work.
+    assert client.get("/api/watches", headers=ME).status_code == 200
+    assert (
+        client.patch(f"/api/watches/{watch_id}", json={"name": "Renamed"}, headers=ME).status_code
+        == 200
+    )
+    assert client.delete(f"/api/watches/{watch_id}", headers=ME).status_code == 204
+
+
+def test_overlay_hands_are_bounded():
+    watch_id = new_watch()
+    point = {"x": 1.0, "y": 2.0}
+    overlay = {
+        "dial_center": point, "dial_semi_major": 10.0, "dial_semi_minor": 9.0,
+        "dial_angle_deg": 0.0, "pivot": point, "twelve": point,
+        "hands": [{"role": "other", "tip": point}] * 65,
+    }  # fmt: skip
+    assert save(watch_id, reading(REF, 1.0, overlay=overlay)).status_code == 422

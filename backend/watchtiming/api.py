@@ -9,7 +9,8 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, PlainSerializer, StringConstraints
 from starlette.concurrency import run_in_threadpool
@@ -43,6 +44,16 @@ app = FastAPI(title="watch-timing")
 # Checked before parsing, so oversized uploads never reach disk. Room for multipart overhead;
 # the per-file check in the handler stays as a second layer.
 app.add_middleware(BodySizeLimit, max_bytes=MAX_UPLOAD_BYTES + 1024 * 1024)
+
+
+@app.exception_handler(store.LimitReached)
+def _limit_reached(_: Request, e: store.LimitReached) -> JSONResponse:
+    return JSONResponse({"detail": str(e)}, 409)
+
+
+@app.exception_handler(store.StorageFull)
+def _storage_full(_: Request, e: store.StorageFull) -> JSONResponse:
+    return JSONResponse({"detail": "The app's storage is full; nothing new can be saved."}, 507)
 
 
 def _utc_millis(value: datetime) -> str:
@@ -98,7 +109,8 @@ class Overlay(BaseModel):
     dial_angle_deg: float
     pivot: PhotoPoint
     twelve: PhotoPoint
-    hands: list[HandOverlay]
+    # Bounded: a saved measurement stores it (the pipeline returns a handful of candidates).
+    hands: list[HandOverlay] = Field(max_length=64)
 
 
 class DialReadingOut(BaseModel):
