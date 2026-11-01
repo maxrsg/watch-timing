@@ -1,15 +1,38 @@
-import { Clock, FlaskConical, type LucideIcon, ScanEye } from 'lucide-react'
+import { Clock, FlaskConical, type LucideIcon, ScanEye, Watch } from 'lucide-react'
 
 export type Page = { hash: string; label: string; icon: LucideIcon }
 
 /** The app's pages, by location hash ("" is the start page). */
 export const PAGES: Page[] = [
   { hash: '', label: 'Read dial', icon: ScanEye },
+  { hash: '#watches', label: 'Watches', icon: Watch },
   { hash: '#probe', label: 'Timestamp check', icon: FlaskConical },
   { hash: '#clock', label: 'Reference clock', icon: Clock },
 ]
 
+/** A location hash split into its page ("#watches"), the path after it and its query. */
+export type Route = { base: string; rest: string[]; query: URLSearchParams }
+
+/** "#watches/3?owner=…" → base "#watches", rest ["3"], query owner=…. */
+export function parseHash(hash: string): Route {
+  const [path = '', search = ''] = hash.split('?', 2)
+  const [base = '', ...rest] = path.split('/')
+  return { base: base === '#' ? '' : base, rest, query: new URLSearchParams(search) }
+}
+
 /** The page for a location hash; unknown hashes and "#" go to the start page. */
 export function pageFor(hash: string): Page {
-  return PAGES.find((p) => p.hash === hash) ?? PAGES[0]!
+  const { base } = parseHash(hash)
+  return PAGES.find((p) => p.hash === base) ?? PAGES[0]!
+}
+
+/** The watch a "#watches/<id>" hash points at, or null for the list. */
+export function watchIdFor(hash: string): number | null {
+  const { base, rest } = parseHash(hash)
+  const id = Number(rest[0])
+  return base === '#watches' && Number.isInteger(id) && id > 0 ? id : null
+}
+
+export function watchHash(id: number): string {
+  return `#watches/${id}`
 }

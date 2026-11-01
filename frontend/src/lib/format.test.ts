@@ -3,6 +3,7 @@ import {
   errorText,
   formatDialTime,
   formatSignedMs,
+  formatSignedRate,
   formatSignedSeconds,
   formatUtcTime,
   formatWallTime,
@@ -56,5 +57,13 @@ describe('formatDialTime', () => {
   it('pads and marks withheld seconds', () => {
     expect(formatDialTime(10, 8, 7.04)).toBe('10:08:07.0')
     expect(formatDialTime(12, 0, null)).toBe('12:00:??')
+  })
+})
+
+describe('formatSignedRate', () => {
+  it('shows an explicit sign and s/d', () => {
+    expect(formatSignedRate(3.24)).toBe('+3.2 s/d')
+    expect(formatSignedRate(-0.06)).toBe('−0.1 s/d')
+    expect(formatSignedRate(0)).toBe('±0.0 s/d')
   })
 })

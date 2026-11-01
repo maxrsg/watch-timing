@@ -3,20 +3,45 @@ import { AppMenu } from '@/components/AppMenu'
 import { CaptureProbe } from '@/components/CaptureProbe'
 import { ReadTest } from '@/components/ReadTest'
 import { ReferenceClock } from '@/components/ReferenceClock'
-import { pageFor } from '@/lib/pages'
+import { WatchDetail } from '@/components/WatchDetail'
+import { WatchList } from '@/components/WatchList'
+import { adoptOwner } from '@/lib/owner'
+import { pageFor, parseHash, watchIdFor } from '@/lib/pages'
+
+/** An owner link ("#watches?owner=<id>") hands this browser the watches; the ID then leaves the URL. */
+function takeOwnerFromHash(): string {
+  const { base, query } = parseHash(window.location.hash)
+  const owner = query.get('owner')
+  if (base === '#watches' && owner) {
+    adoptOwner(owner)
+    history.replaceState(null, '', '#watches')
+  }
+  return window.location.hash
+}
 
 function useHash(): string {
-  const [hash, setHash] = useState(() => window.location.hash)
+  const [hash, setHash] = useState(takeOwnerFromHash)
   useEffect(() => {
-    const update = () => setHash(window.location.hash)
+    const update = () => setHash(takeOwnerFromHash())
     window.addEventListener('hashchange', update)
     return () => window.removeEventListener('hashchange', update)
   }, [])
   return hash
 }
 
+function Page({ hash }: { hash: string }) {
+  const page = pageFor(hash)
+  if (page.hash === '#probe') return <CaptureProbe />
+  if (page.hash === '#watches') {
+    const id = watchIdFor(hash)
+    return id === null ? <WatchList /> : <WatchDetail key={id} id={id} />
+  }
+  return <ReadTest />
+}
+
 export default function App() {
-  const page = pageFor(useHash())
+  const hash = useHash()
+  const page = pageFor(hash)
   if (page.hash === '#clock') {
     // Full-bleed for photographing; the menu stays out of the way in a corner.
     return (
@@ -36,7 +61,7 @@ export default function App() {
         </div>
         <h1 className="font-heading text-xl font-semibold">{page.label}</h1>
       </header>
-      {page.hash === '#probe' ? <CaptureProbe /> : <ReadTest />}
+      <Page hash={hash} />
     </main>
   )
 }

@@ -5,6 +5,15 @@ ACCURACY_REPORT: dict[str, str] = {}
 REAL_PHOTO_REPORT: dict[str, str] = {}
 
 
+@pytest.fixture(autouse=True)
+def tmp_db(tmp_path_factory, monkeypatch):
+    """Every test gets its own empty database, never backend/data/ (and not in `tmp_path`,
+    which tests may expect to stay empty)."""
+    path = tmp_path_factory.mktemp("db") / "watchtiming.sqlite"
+    monkeypatch.setenv("WATCHTIMING_DB", str(path))
+    return path
+
+
 @pytest.fixture
 def accuracy_report() -> dict[str, str]:
     return ACCURACY_REPORT

@@ -76,7 +76,8 @@ export interface paths {
         /**
          * Read
          * @description Read the dial and compute the deviation from the capture time. Persists nothing (unless
-         *     the dev-only WATCHTIMING_SAVE_UPLOADS is set, see upload_log.py).
+         *     the dev-only WATCHTIMING_SAVE_UPLOADS is set, see upload_log.py); a reading is saved to a
+         *     watch with POST /api/watches/{id}/measurements.
          *
          *     `tap_x`, `tap_y`: the 12 o'clock marker in the upright photo's pixels (required unless the
          *     time is typed). The device fields are as for /api/probe; `device_capture_time` should carry
@@ -93,9 +94,120 @@ export interface paths {
          *     e.g. from the last measurement and the rate. With a reference time it decides which minute
          *     a minute hand near a minute boundary means, and which of two hands that could be swapped
          *     is the hour hand. It never changes the seconds read.
+         *
+         *     `watch_id` (with the X-Owner-Id header): the watch being measured. Without an
+         *     `expected_deviation_s`, its current session predicts one.
          */
         post: operations["read_api_read_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Watches
+         * @description The owner's watches, oldest first, with their current session's rate.
+         */
+        get: operations["list_watches_api_watches_get"];
+        put?: never;
+        /**
+         * Create Watch
+         * @description A new watch; its first session starts now.
+         */
+        post: operations["create_watch_api_watches_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watches/{watch_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Watch
+         * @description The watch with all its sessions (newest first), their measurements and rates.
+         */
+        get: operations["get_watch_api_watches__watch_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Watch
+         * @description Deletes the watch with all its sessions and measurements.
+         */
+        delete: operations["delete_watch_api_watches__watch_id__delete"];
+        options?: never;
+        head?: never;
+        /** Rename Watch */
+        patch: operations["rename_watch_api_watches__watch_id__patch"];
+        trace?: never;
+    };
+    "/api/watches/{watch_id}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Session
+         * @description The watch was set: a new session starts, and the rate starts over. Rates are never
+         *     computed across sessions.
+         */
+        post: operations["start_session_api_watches__watch_id__sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watches/{watch_id}/measurements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save Measurement
+         * @description Save a reading to the watch's current session. Saving is the user's confirmation, so the
+         *     measurement counts toward the rate.
+         */
+        post: operations["save_measurement_api_watches__watch_id__measurements_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watches/{watch_id}/measurements/{measurement_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Measurement */
+        delete: operations["delete_measurement_api_watches__watch_id__measurements__measurement_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -128,6 +240,8 @@ export interface components {
             platform?: components["schemas"]["Platform"] | null;
             /** Expected Deviation S */
             expected_deviation_s?: number | null;
+            /** Watch Id */
+            watch_id?: number | null;
             /** Hour X */
             hour_x?: number | null;
             /** Hour Y */
@@ -202,6 +316,75 @@ export interface components {
             tip: components["schemas"]["PhotoPoint"];
         };
         /**
+         * MeasurementIn
+         * @description A reading to save, as /api/read returned it (or as the user corrected or typed it). The
+         *     deviation is recomputed here from the dial time and the reference.
+         */
+        MeasurementIn: {
+            /**
+             * Reference Time Utc
+             * Format: date-time
+             */
+            reference_time_utc: string;
+            /** Reference Utc Offset Minutes */
+            reference_utc_offset_minutes: number;
+            reference_source: components["schemas"]["ReferenceSource"];
+            platform?: components["schemas"]["Platform"] | null;
+            frame_timing?: components["schemas"]["FrameTiming"] | null;
+            /** Latency Correction Ms */
+            latency_correction_ms?: number | null;
+            /** Clock Offset Ms */
+            clock_offset_ms?: number | null;
+            /** Hours */
+            hours: number;
+            /** Minutes */
+            minutes: number;
+            /** Seconds */
+            seconds: number;
+            /** Confidence */
+            confidence: number;
+            /** Seconds Confidence */
+            seconds_confidence: number;
+            /** Correction */
+            correction?: ("hands" | "typed") | null;
+            overlay?: components["schemas"]["Overlay"] | null;
+            tap?: components["schemas"]["PhotoPoint"] | null;
+            /** Image Sha256 */
+            image_sha256: string;
+        };
+        /** MeasurementOut */
+        MeasurementOut: {
+            /** Id */
+            id: number;
+            /** Created At */
+            created_at: string;
+            /** Reference Time Utc */
+            reference_time_utc: string;
+            /** Reference Utc Offset Minutes */
+            reference_utc_offset_minutes: number;
+            reference_source: components["schemas"]["ReferenceSource"];
+            platform: components["schemas"]["Platform"] | null;
+            frame_timing: components["schemas"]["FrameTiming"] | null;
+            /** Source Key */
+            source_key: string;
+            /** Latency Correction Ms */
+            latency_correction_ms: number | null;
+            /** Hours */
+            hours: number;
+            /** Minutes */
+            minutes: number;
+            /** Seconds */
+            seconds: number;
+            /** Deviation S */
+            deviation_s: number;
+            /** Confidence */
+            confidence: number;
+            /** Seconds Confidence */
+            seconds_confidence: number;
+            /** Correction */
+            correction: ("hands" | "typed") | null;
+        };
+        /**
          * Overlay
          * @description The detected geometry, in the upright photo's pixels (the coordinates of the tap).
          */
@@ -254,6 +437,30 @@ export interface components {
             /** Error */
             error: string | null;
         };
+        /**
+         * RateOut
+         * @description The session's rate: one slope, a separate intercept per reference source.
+         */
+        RateOut: {
+            /** Rate S Per Day */
+            rate_s_per_day: number;
+            /** Intercepts */
+            intercepts: {
+                [key: string]: number;
+            };
+            /** Epoch */
+            epoch: string;
+            /** N */
+            n: number;
+            /** Span Hours */
+            span_hours: number;
+            /** Residual Std S */
+            residual_std_s: number | null;
+            /** Short Span */
+            short_span: boolean;
+            /** Mixed Sources */
+            mixed_sources: boolean;
+        };
         /** ReadResult */
         ReadResult: {
             /** Image Width */
@@ -265,10 +472,16 @@ export interface components {
             /** Reference Utc Offset Minutes */
             reference_utc_offset_minutes: number | null;
             reference_source: components["schemas"]["ReferenceSource"] | null;
+            frame_timing: components["schemas"]["FrameTiming"] | null;
+            platform: components["schemas"]["Platform"] | null;
             /** Latency Correction Ms */
             latency_correction_ms: number | null;
             /** Timestamp Error */
             timestamp_error: string | null;
+            /** Image Sha256 */
+            image_sha256: string;
+            /** Expected Deviation S */
+            expected_deviation_s: number | null;
             reading: components["schemas"]["DialReadingOut"] | null;
             overlay: components["schemas"]["Overlay"] | null;
             /** Reading Error */
@@ -286,6 +499,16 @@ export interface components {
             /** Server Time Utc */
             server_time_utc: string;
         };
+        /** SessionOut */
+        SessionOut: {
+            /** Id */
+            id: number;
+            /** Started At */
+            started_at: string;
+            /** Measurements */
+            measurements: components["schemas"]["MeasurementOut"][];
+            rate: components["schemas"]["RateOut"] | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -298,6 +521,36 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** WatchDetail */
+        WatchDetail: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Created At */
+            created_at: string;
+            /** Sessions */
+            sessions: components["schemas"]["SessionOut"][];
+        };
+        /** WatchIn */
+        WatchIn: {
+            /** Name */
+            name: string;
+        };
+        /** WatchSummary */
+        WatchSummary: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Created At */
+            created_at: string;
+            /** Measurement Count */
+            measurement_count: number;
+            /** Latest Deviation S */
+            latest_deviation_s: number | null;
+            rate: components["schemas"]["RateOut"] | null;
         };
     };
     responses: never;
@@ -386,7 +639,9 @@ export interface operations {
     read_api_read_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-owner-id"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -404,6 +659,275 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ReadResult"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_watches_api_watches_get: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-owner-id": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchSummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_watch_api_watches_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-owner-id": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_watch_api_watches__watch_id__get: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-owner-id": string;
+            };
+            path: {
+                watch_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_watch_api_watches__watch_id__delete: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-owner-id": string;
+            };
+            path: {
+                watch_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_watch_api_watches__watch_id__patch: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-owner-id": string;
+            };
+            path: {
+                watch_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_session_api_watches__watch_id__sessions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-owner-id": string;
+            };
+            path: {
+                watch_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_measurement_api_watches__watch_id__measurements_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-owner-id": string;
+            };
+            path: {
+                watch_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeasurementIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeasurementOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_measurement_api_watches__watch_id__measurements__measurement_id__delete: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-owner-id": string;
+            };
+            path: {
+                watch_id: number;
+                measurement_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

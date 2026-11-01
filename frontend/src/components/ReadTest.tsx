@@ -1,23 +1,30 @@
 import { useEffect, useState } from 'react'
-import { Check, CircleAlert, LoaderCircle, Move, RotateCcw, X } from 'lucide-react'
+import { Check, CircleAlert, LoaderCircle, Move, RotateCcw, Save, X } from 'lucide-react'
 import {
   type DeviceCapture,
   type HandTips,
   type PhotoPoint,
   type ReadResult,
   type TypedTime,
+  type WatchSummary,
+  listWatches,
   readDial,
+  saveMeasurement,
 } from '@/api/client'
 import { CapturePicker } from '@/components/CapturePicker'
 import { DefinitionRow } from '@/components/DefinitionRow'
 import { PhotoOverlay } from '@/components/PhotoOverlay'
 import { TypedTimeForm } from '@/components/TypedTimeForm'
+import { WatchPicker } from '@/components/WatchPicker'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { errorText, formatDialTime, formatSignedSeconds, formatWallTime } from '@/lib/format'
 import { type CapturedFrame, frameDevice, frameToFile } from '@/lib/frame'
 import { initialTip, initialTips } from '@/lib/hands'
+import { lastWatchId, rememberWatch } from '@/lib/last-watch'
+import { measurementFromResult } from '@/lib/measurement'
+import { watchHash } from '@/lib/pages'
 import { typedTimePlaceholders } from '@/lib/typed-time'
 import { cn } from '@/lib/utils'
 
@@ -27,6 +34,68 @@ type Photo = { file: File; url: string; device?: DeviceCapture }
 type Mode = { kind: 'view' } | { kind: 'hands'; tips: HandTips }
 
 const BADGE = { hands: 'hands placed by you', typed: 'typed by you' } as const
+
+/** Saving the reading to the chosen watch. */
+type SaveState = { kind: 'idle' } | { kind: 'saving' } | { kind: 'saved'; watchId: number } | { kind: 'error'; message: string }
+
+/** The watches to choose from and the chosen one (remembered per browser). */
+function useWatches() {
+  const [watches, setWatches] = useState<WatchSummary[] | null>(null)
+  const [chosen, setChosen] = useState<number | null>(lastWatchId)
+  useEffect(() => {
+    // Without the watches the page still reads dials; it just can't save.
+    listWatches().then(setWatches, () => setWatches([]))
+  }, [])
+  const watch = watches?.find((w) => w.id === chosen) ?? null
+  return {
+    watches,
+    watch,
+    choose(id: number | null) {
+      setChosen(id)
+      rememberWatch(id)
+    },
+  }
+}
+
+function SaveReading({
+  result,
+  tap,
+  watch,
+  state,
+  onSave,
+}: {
+  result: ReadResult
+  tap: PhotoPoint | null
+  watch: WatchSummary | null
+  state: SaveState
+  onSave: () => void
+}) {
+  if (!measurementFromResult(result, tap)) return null
+  if (!watch) {
+    return <p className="text-sm text-muted-foreground">Choose a watch above to save this reading.</p>
+  }
+  if (state.kind === 'saved') {
+    return (
+      <p className="flex flex-wrap items-center gap-2 text-sm">
+        <Check className="size-4 text-primary" /> Saved to {watch.name}.{' '}
+        <a href={watchHash(state.watchId)} className="font-medium underline underline-offset-4">
+          See its rate
+        </a>
+      </p>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Button size="touch" onClick={onSave} disabled={state.kind === 'saving'}>
+        {state.kind === 'saving' ? <LoaderCircle className="animate-spin" /> : <Save />} Save to {watch.name}
+      </Button>
+      {result.reading?.needs_confirmation && (
+        <p className="text-sm text-muted-foreground">Saving confirms this reading. Correct it first if it's off.</p>
+      )}
+      {state.kind === 'error' && <p className="text-sm text-destructive">{state.message}</p>}
+    </div>
+  )
+}
 
 /** What to tell the user to do next. */
 function instruction(photo: Photo | null, result: ReadResult | null, mode: Mode): string {
@@ -117,6 +186,8 @@ export function ReadTest() {
   const [result, setResult] = useState<ReadResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [mode, setMode] = useState<Mode>({ kind: 'view' })
+  const [save, setSave] = useState<SaveState>({ kind: 'idle' })
+  const { watches, watch, choose } = useWatches()
 
   const url = photo?.url
   useEffect(() => {
@@ -131,6 +202,7 @@ export function ReadTest() {
     setResult(null)
     setError(null)
     setMode({ kind: 'view' })
+    setSave({ kind: 'idle' })
   }
 
   function start(file: File, device?: DeviceCapture) {
@@ -147,13 +219,26 @@ export function ReadTest() {
     if (point) setTap(point)
     setBusy(true)
     setError(null)
+    setSave({ kind: 'idle' })
     try {
-      setResult(await readDial(photo.file, point, photo.device, hands, typed))
+      setResult(await readDial(photo.file, point, photo.device, hands, typed, watch?.id))
       setMode({ kind: 'view' })
     } catch (e) {
       setError(errorText(e))
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function saveReading() {
+    const measurement = result && measurementFromResult(result, result.reading?.correction === 'typed' ? null : tap)
+    if (!watch || !measurement) return
+    setSave({ kind: 'saving' })
+    try {
+      await saveMeasurement(watch.id, measurement)
+      setSave({ kind: 'saved', watchId: watch.id })
+    } catch (e) {
+      setSave({ kind: 'error', message: errorText(e) })
     }
   }
 
@@ -163,6 +248,16 @@ export function ReadTest() {
 
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-4">
+      {watches && (
+        <WatchPicker
+          watches={watches}
+          value={watch?.id ?? null}
+          onChange={(id) => {
+            choose(id)
+            setSave({ kind: 'idle' })
+          }}
+        />
+      )}
       <p className="text-sm text-muted-foreground">{instruction(photo, result, mode)}</p>
 
       {!photo && <CapturePicker onFrame={fromFrame} onFile={(f) => start(f)} />}
@@ -211,7 +306,12 @@ export function ReadTest() {
             </p>
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
-          {result && !busy && mode.kind === 'view' && <Result result={result} />}
+          {result && !busy && mode.kind === 'view' && (
+            <>
+              <Result result={result} />
+              <SaveReading result={result} tap={tap} watch={watch} state={save} onSave={() => void saveReading()} />
+            </>
+          )}
           {mode.kind === 'view' && (
             <TypedTimeForm
               key={photo.url}

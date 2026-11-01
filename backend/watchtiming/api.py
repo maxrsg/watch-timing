@@ -1,12 +1,18 @@
 import hashlib
+import json
+import sqlite3
+import uuid
+from collections.abc import Iterator
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile
-from pydantic import BaseModel, PlainSerializer
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Response, UploadFile
+from pydantic import BaseModel, Field, PlainSerializer, StringConstraints
 from starlette.concurrency import run_in_threadpool
 
+from watchtiming import store
+from watchtiming.accuracy import RateFit, RatePoint, expected_deviation, fit_rate, source_key
 from watchtiming.dial import preprocess
 from watchtiming.exif import CaptureExif, InvalidTimestampError, read_capture_exif
 from watchtiming.geometry import Point
@@ -14,8 +20,10 @@ from watchtiming.imaging import InvalidImageError
 from watchtiming.limits import BodySizeLimit
 from watchtiming.measure import HandTips, Measurement, measure, measure_typed
 from watchtiming.pipeline import OverlayGeometry
-from watchtiming.reading import DialTime
+from watchtiming.reading import DialTime, deviation_seconds
 from watchtiming.reference import (
+    EARLIEST_CAPTURE,
+    MAX_CLOCK_AHEAD,
     DeviceCapture,
     FrameTiming,
     Platform,
@@ -108,8 +116,13 @@ class ReadResult(BaseModel):
     reference_time_utc: UtcMillis | None
     reference_utc_offset_minutes: int | None  # the phone's local zone at capture
     reference_source: ReferenceSource | None
+    frame_timing: FrameTiming | None  # device clock only
+    platform: Platform | None  # device clock only
     latency_correction_ms: float | None
     timestamp_error: str | None
+    image_sha256: str
+    # The deviation the reading was steered with: sent, or predicted from the watch's session.
+    expected_deviation_s: float | None
     reading: DialReadingOut | None
     overlay: Overlay | None
     reading_error: str | None
@@ -273,13 +286,19 @@ def _reference_fields(ref: Reference | None, timestamp_error: str | None) -> dic
             round(offset.total_seconds() / 60) if offset is not None else None
         ),
         reference_source=ref.source if ref else None,
+        frame_timing=ref.device.timing if ref and ref.device else None,
+        platform=ref.device.platform if ref and ref.device else None,
         latency_correction_ms=_latency_ms(ref),
         timestamp_error=timestamp_error,
     )
 
 
 def _typed_result(
-    size: tuple[int, int], typed: DialTime, ref: Reference | None, timestamp_error: str | None
+    size: tuple[int, int],
+    sha256: str,
+    typed: DialTime,
+    ref: Reference | None,
+    timestamp_error: str | None,
 ) -> ReadResult:
     """A typed time: the user's reading is taken as is, the dial isn't read."""
     width, height = size
@@ -287,6 +306,8 @@ def _typed_result(
         image_width=width,
         image_height=height,
         **_reference_fields(ref, timestamp_error),
+        image_sha256=sha256,
+        expected_deviation_s=None,
         reading=DialReadingOut(
             hours=typed.dial_hours,
             minutes=typed.minutes,
@@ -316,20 +337,88 @@ def _reading_out(m: Measurement) -> DialReadingOut | None:
     )  # fmt: skip
 
 
+# --- Watches: owner and database -----------------------------------------------------------
+
+
+def get_db() -> Iterator[sqlite3.Connection]:
+    conn = store.connect(store.db_path())
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _owner_id(value: str) -> str:
+    try:
+        return str(uuid.UUID(value))
+    except ValueError as e:
+        raise HTTPException(422, "X-Owner-Id must be a UUID.") from e
+
+
+def require_owner(x_owner_id: Annotated[str, Header()]) -> str:
+    """No login yet: the browser generates an anonymous owner ID, keeps it and sends it."""
+    return _owner_id(x_owner_id)
+
+
+def optional_owner(x_owner_id: Annotated[str | None, Header()] = None) -> str | None:
+    return _owner_id(x_owner_id) if x_owner_id is not None else None
+
+
+Db = Annotated[sqlite3.Connection, Depends(get_db)]
+Owner = Annotated[str, Depends(require_owner)]
+
+
+def _watch_or_404(db: sqlite3.Connection, owner: str, watch_id: int) -> store.Watch:
+    watch = store.get_watch(db, owner, watch_id)
+    if watch is None:
+        raise HTTPException(404, "Watch not found.")
+    return watch
+
+
+def _rate_points(measurements: list[store.SavedMeasurement]) -> list[RatePoint]:
+    return [
+        RatePoint(
+            m.data.reference_time_utc,
+            m.data.deviation_s,
+            source_key(m.data.reference_source, m.data.platform, m.data.frame_timing),
+        )
+        for m in measurements
+    ]
+
+
+def _predicted_deviation(
+    db: sqlite3.Connection, owner: str | None, watch_id: int, ref: Reference | None
+) -> float | None:
+    """The deviation the watch's current session predicts for this photo."""
+    if owner is None:
+        raise HTTPException(422, "Send X-Owner-Id with watch_id.")
+    watch = _watch_or_404(db, owner, watch_id)
+    if ref is None:
+        return None
+    points = _rate_points(store.measurements(db, store.current_session(db, watch)))
+    platform = ref.device.platform if ref.device else None
+    timing = ref.device.timing if ref.device else None
+    return expected_deviation(points, ref.time, source_key(ref.source, platform, timing))
+
+
 @app.post("/api/read")
 async def read(
     file: UploadFile,
     tips: Annotated[HandTips | None, Depends(_hand_tips)],
     typed: Annotated[DialTime | None, Depends(_typed_time)],
+    db: Db,
+    owner: Annotated[str | None, Depends(optional_owner)],
     tap_x: Annotated[float | None, Form()] = None,
     tap_y: Annotated[float | None, Form()] = None,
     device_capture_time: Annotated[datetime | None, Form()] = None,
     frame_timing: Annotated[FrameTiming | None, Form()] = None,
     platform: Annotated[Platform | None, Form()] = None,
-    expected_deviation_s: Annotated[float | None, Form()] = None,
+    expected_deviation_s: Annotated[float | None, Form(allow_inf_nan=False)] = None,
+    watch_id: Annotated[int | None, Form()] = None,
 ) -> ReadResult:
     """Read the dial and compute the deviation from the capture time. Persists nothing (unless
-    the dev-only WATCHTIMING_SAVE_UPLOADS is set, see upload_log.py).
+    the dev-only WATCHTIMING_SAVE_UPLOADS is set, see upload_log.py); a reading is saved to a
+    watch with POST /api/watches/{id}/measurements.
 
     `tap_x`, `tap_y`: the 12 o'clock marker in the upright photo's pixels (required unless the
     time is typed). The device fields are as for /api/probe; `device_capture_time` should carry
@@ -346,18 +435,24 @@ async def read(
     e.g. from the last measurement and the rate. With a reference time it decides which minute
     a minute hand near a minute boundary means, and which of two hands that could be swapped
     is the hour hand. It never changes the seconds read.
+
+    `watch_id` (with the X-Owner-Id header): the watch being measured. Without an
+    `expected_deviation_s`, its current session predicts one.
     """
     if typed is not None and tips is not None:
         raise HTTPException(422, "Send either a typed time or hand tips, not both.")
     data, exif = await _read_upload(file)
+    sha256 = hashlib.sha256(data).hexdigest()
     ref, _, timestamp_error = _reference(exif, device_capture_time, frame_timing, platform)
+    if watch_id is not None and expected_deviation_s is None:
+        expected_deviation_s = _predicted_deviation(db, owner, watch_id, ref)
     try:
         pre = await run_in_threadpool(preprocess, data)
     except InvalidImageError as e:
         raise HTTPException(422, str(e)) from e
     width, height = pre.original_size
     if typed is not None:
-        return _typed_result((width, height), typed, ref, timestamp_error)
+        return _typed_result((width, height), sha256, typed, ref, timestamp_error)
     if tap_x is None or tap_y is None:
         raise HTTPException(422, "Tap the 12 o'clock marker (or type the time).")
     if not (0 <= tap_x < width and 0 <= tap_y < height):
@@ -368,6 +463,8 @@ async def read(
         image_width=width,
         image_height=height,
         **_reference_fields(ref, timestamp_error),
+        image_sha256=sha256,
+        expected_deviation_s=expected_deviation_s,
         reading=_reading_out(m),
         overlay=_overlay(m.overlay) if m.overlay is not None else None,
         reading_error=m.reading_error,
@@ -382,6 +479,7 @@ async def read(
             "frame_timing": frame_timing,
             "platform": platform,
             "expected_deviation_s": expected_deviation_s,
+            "watch_id": watch_id,
             "filename": file.filename,
         }
         result_json = result.model_dump_json(indent=2)
@@ -389,3 +487,252 @@ async def read(
             save_upload, root, data, file.content_type, request, pre, m, result_json
         )
     return result
+
+
+# --- Watches: endpoints ---------------------------------------------------------------------
+
+WatchName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+
+
+class WatchIn(BaseModel):
+    name: WatchName
+
+
+class RateOut(BaseModel):
+    """The session's rate: one slope, a separate intercept per reference source."""
+
+    rate_s_per_day: float  # positive = gains time
+    intercepts: dict[str, float]  # each source's deviation at `epoch`
+    epoch: UtcMillis
+    n: int
+    span_hours: float
+    residual_std_s: float | None
+    short_span: bool  # under 24 h: shown, but not trustworthy yet
+    mixed_sources: bool
+
+
+class MeasurementOut(BaseModel):
+    id: int
+    created_at: UtcMillis
+    reference_time_utc: UtcMillis
+    reference_utc_offset_minutes: int
+    reference_source: ReferenceSource
+    platform: Platform | None
+    frame_timing: FrameTiming | None
+    source_key: str  # the group its constant offset belongs to (see RateOut.intercepts)
+    latency_correction_ms: float | None
+    hours: int  # 1–12 as shown on the dial
+    minutes: int
+    seconds: float
+    deviation_s: float  # dial − reference, positive = fast
+    confidence: float
+    seconds_confidence: float
+    correction: Literal["hands", "typed"] | None
+
+
+class SessionOut(BaseModel):
+    id: int
+    started_at: UtcMillis
+    measurements: list[MeasurementOut]  # by reference time
+    rate: RateOut | None  # None until two measurements at different times
+
+
+class WatchSummary(BaseModel):
+    id: int
+    name: str
+    created_at: UtcMillis
+    # The current session (since the watch was last set):
+    measurement_count: int
+    latest_deviation_s: float | None
+    rate: RateOut | None
+
+
+class WatchDetail(BaseModel):
+    id: int
+    name: str
+    created_at: UtcMillis
+    sessions: list[SessionOut]  # newest (current) first
+
+
+class MeasurementIn(BaseModel):
+    """A reading to save, as /api/read returned it (or as the user corrected or typed it). The
+    deviation is recomputed here from the dial time and the reference."""
+
+    reference_time_utc: datetime
+    reference_utc_offset_minutes: int = Field(ge=-14 * 60, le=14 * 60)
+    reference_source: ReferenceSource
+    platform: Platform | None = None
+    frame_timing: FrameTiming | None = None
+    latency_correction_ms: float | None = Field(default=None, allow_inf_nan=False)
+    clock_offset_ms: float | None = Field(default=None, allow_inf_nan=False)
+    hours: int = Field(ge=1, le=12)
+    minutes: int = Field(ge=0, le=59)
+    seconds: float = Field(ge=0, lt=60, allow_inf_nan=False)
+    confidence: float = Field(ge=0, le=1)
+    seconds_confidence: float = Field(ge=0, le=1)
+    correction: Literal["hands", "typed"] | None = None
+    overlay: Overlay | None = None
+    tap: PhotoPoint | None = None
+    image_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def _rate_out(fit: RateFit | None) -> RateOut | None:
+    return RateOut(**asdict(fit)) if fit is not None else None
+
+
+def _measurement_out(m: store.SavedMeasurement) -> MeasurementOut:
+    d = m.data
+    return MeasurementOut(
+        id=m.id,
+        created_at=m.created_at,
+        reference_time_utc=d.reference_time_utc,
+        reference_utc_offset_minutes=d.reference_utc_offset_minutes,
+        reference_source=ReferenceSource(d.reference_source),
+        platform=Platform(d.platform) if d.platform else None,
+        frame_timing=FrameTiming(d.frame_timing) if d.frame_timing else None,
+        source_key=source_key(d.reference_source, d.platform, d.frame_timing),
+        latency_correction_ms=d.latency_correction_ms,
+        hours=d.dial_hours,
+        minutes=d.dial_minutes,
+        seconds=d.dial_seconds,
+        deviation_s=d.deviation_s,
+        confidence=d.confidence,
+        seconds_confidence=d.seconds_confidence,
+        correction=d.correction,  # type: ignore[arg-type]  # only ever stored from MeasurementIn
+    )
+
+
+def _summary(db: sqlite3.Connection, watch: store.Watch) -> WatchSummary:
+    ms = store.measurements(db, store.current_session(db, watch))
+    latest = max(ms, key=lambda m: m.data.reference_time_utc) if ms else None
+    return WatchSummary(
+        id=watch.id,
+        name=watch.name,
+        created_at=watch.created_at,
+        measurement_count=len(ms),
+        latest_deviation_s=latest.data.deviation_s if latest else None,
+        rate=_rate_out(fit_rate(_rate_points(ms))),
+    )
+
+
+def _detail(db: sqlite3.Connection, watch: store.Watch) -> WatchDetail:
+    sessions = []
+    for s in store.sessions(db, watch):
+        ms = store.measurements(db, s)
+        sessions.append(
+            SessionOut(
+                id=s.id,
+                started_at=s.started_at,
+                measurements=[_measurement_out(m) for m in ms],
+                rate=_rate_out(fit_rate(_rate_points(ms))),
+            )
+        )
+    return WatchDetail(id=watch.id, name=watch.name, created_at=watch.created_at, sessions=sessions)
+
+
+@app.get("/api/watches")
+def list_watches(db: Db, owner: Owner) -> list[WatchSummary]:
+    """The owner's watches, oldest first, with their current session's rate."""
+    return [_summary(db, w) for w in store.list_watches(db, owner)]
+
+
+@app.post("/api/watches", status_code=201)
+def create_watch(body: WatchIn, db: Db, owner: Owner) -> WatchSummary:
+    """A new watch; its first session starts now."""
+    return _summary(db, store.create_watch(db, owner, body.name, datetime.now(UTC)))
+
+
+@app.get("/api/watches/{watch_id}")
+def get_watch(watch_id: int, db: Db, owner: Owner) -> WatchDetail:
+    """The watch with all its sessions (newest first), their measurements and rates."""
+    return _detail(db, _watch_or_404(db, owner, watch_id))
+
+
+@app.patch("/api/watches/{watch_id}")
+def rename_watch(watch_id: int, body: WatchIn, db: Db, owner: Owner) -> WatchSummary:
+    if not store.rename_watch(db, owner, watch_id, body.name):
+        raise HTTPException(404, "Watch not found.")
+    return _summary(db, _watch_or_404(db, owner, watch_id))
+
+
+@app.delete("/api/watches/{watch_id}", status_code=204)
+def delete_watch(watch_id: int, db: Db, owner: Owner) -> Response:
+    """Deletes the watch with all its sessions and measurements."""
+    if not store.delete_watch(db, owner, watch_id):
+        raise HTTPException(404, "Watch not found.")
+    return Response(status_code=204)
+
+
+@app.post("/api/watches/{watch_id}/sessions", status_code=201)
+def start_session(watch_id: int, db: Db, owner: Owner) -> WatchDetail:
+    """The watch was set: a new session starts, and the rate starts over. Rates are never
+    computed across sessions."""
+    watch = _watch_or_404(db, owner, watch_id)
+    store.start_session(db, watch, datetime.now(UTC))
+    return _detail(db, watch)
+
+
+def _measurement_data(body: MeasurementIn, now: datetime) -> store.MeasurementData:
+    """Check a reading to save and recompute its deviation."""
+    if body.reference_time_utc.tzinfo is None:
+        raise HTTPException(422, "reference_time_utc must include a time zone.")
+    ref_utc = body.reference_time_utc.astimezone(UTC)
+    if not EARLIEST_CAPTURE <= ref_utc <= now + MAX_CLOCK_AHEAD:
+        raise HTTPException(422, "The reference time is implausible.")
+    device_fields = (body.platform, body.frame_timing)
+    if body.reference_source == ReferenceSource.DEVICE_CLOCK:
+        device_fields_ok = all(f is not None for f in device_fields)
+    else:
+        device_fields_ok = all(f is None for f in device_fields)
+    if not device_fields_ok:
+        raise HTTPException(
+            422, "Platform and frame timing are sent for device-clock references only."
+        )
+    local = ref_utc.astimezone(timezone(timedelta(minutes=body.reference_utc_offset_minutes)))
+    deviation = deviation_seconds(DialTime(body.hours % 12, body.minutes, body.seconds), local)
+    geometry = (
+        json.dumps(
+            {
+                "overlay": body.overlay.model_dump() if body.overlay else None,
+                "tap": body.tap.model_dump() if body.tap else None,
+            }
+        )
+        if body.overlay or body.tap
+        else None
+    )
+    return store.MeasurementData(
+        reference_time_utc=ref_utc,
+        reference_utc_offset_minutes=body.reference_utc_offset_minutes,
+        reference_source=body.reference_source.value,
+        platform=body.platform.value if body.platform else None,
+        frame_timing=body.frame_timing.value if body.frame_timing else None,
+        latency_correction_ms=body.latency_correction_ms,
+        clock_offset_ms=body.clock_offset_ms,
+        dial_hours=body.hours,
+        dial_minutes=body.minutes,
+        dial_seconds=body.seconds,
+        deviation_s=deviation,
+        confidence=body.confidence,
+        seconds_confidence=body.seconds_confidence,
+        correction=body.correction,
+        geometry_json=geometry,
+        image_sha256=body.image_sha256,
+    )
+
+
+@app.post("/api/watches/{watch_id}/measurements", status_code=201)
+def save_measurement(watch_id: int, body: MeasurementIn, db: Db, owner: Owner) -> MeasurementOut:
+    """Save a reading to the watch's current session. Saving is the user's confirmation, so the
+    measurement counts toward the rate."""
+    watch = _watch_or_404(db, owner, watch_id)
+    now = datetime.now(UTC)
+    data = _measurement_data(body, now)
+    return _measurement_out(store.add_measurement(db, store.current_session(db, watch), data, now))
+
+
+@app.delete("/api/watches/{watch_id}/measurements/{measurement_id}", status_code=204)
+def delete_measurement(watch_id: int, measurement_id: int, db: Db, owner: Owner) -> Response:
+    watch = _watch_or_404(db, owner, watch_id)
+    if not store.delete_measurement(db, watch, measurement_id):
+        raise HTTPException(404, "Measurement not found.")
+    return Response(status_code=204)

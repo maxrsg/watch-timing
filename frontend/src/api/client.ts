@@ -1,4 +1,5 @@
 import { toLocalIsoString } from '@/lib/format'
+import { ownerId } from '@/lib/owner'
 import type { components } from './schema'
 
 export type ProbeResult = components['schemas']['ProbeResult']
@@ -9,6 +10,12 @@ export type Platform = components['schemas']['Platform']
 export type ReadResult = components['schemas']['ReadResult']
 export type Overlay = components['schemas']['Overlay']
 export type DialReading = components['schemas']['DialReadingOut']
+export type WatchSummary = components['schemas']['WatchSummary']
+export type WatchDetail = components['schemas']['WatchDetail']
+export type Session = components['schemas']['SessionOut']
+export type SavedMeasurement = components['schemas']['MeasurementOut']
+export type NewMeasurement = components['schemas']['MeasurementIn']
+export type Rate = components['schemas']['RateOut']
 /** A point in the upright photo's pixels: the frame the tap, the overlay and hand tips use. */
 export type PhotoPoint = components['schemas']['PhotoPoint']
 export type OverlayRole = components['schemas']['HandOverlay']['role']
@@ -51,7 +58,8 @@ export async function probe(file: File, device?: DeviceCapture): Promise<ProbeRe
  * Read the dial. `tap` is the 12 o'clock marker in the upright photo's pixels. With `hands`
  * (tips the user placed, same pixels), the server uses them instead of detecting the hands.
  * With `typed`, the server takes that time as the reading (no tap needed); the photo then only
- * provides the reference time.
+ * provides the reference time. With `watchId`, the server steers the reading with that
+ * watch's predicted deviation.
  */
 export async function readDial(
   file: File,
@@ -59,8 +67,14 @@ export async function readDial(
   device?: DeviceCapture,
   hands?: HandTips,
   typed?: TypedTime,
+  watchId?: number,
 ): Promise<ReadResult> {
   const form = uploadForm(file, device)
+  const headers: Record<string, string> = {}
+  if (watchId !== undefined) {
+    form.append('watch_id', String(watchId))
+    headers['X-Owner-Id'] = ownerId()
+  }
   if (tap) {
     form.append('tap_x', String(tap.x))
     form.append('tap_y', String(tap.y))
@@ -78,7 +92,7 @@ export async function readDial(
       form.append(`${role}_y`, String(tip.y))
     }
   }
-  const res = await fetch('/api/read', { method: 'POST', body: form })
+  const res = await fetch('/api/read', { method: 'POST', body: form, headers })
   if (!res.ok) throw new Error(await errorMessage(res))
   return res.json()
 }
@@ -99,4 +113,51 @@ export async function getServerTime(): Promise<ServerTime> {
   const res = await fetch('/api/time', { cache: 'no-store' })
   if (!res.ok) throw new Error(await errorMessage(res))
   return res.json()
+}
+
+/** A watch request: JSON, with this browser's anonymous owner ID. */
+async function watchRequest<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { 'X-Owner-Id': ownerId() }
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  const res = await fetch(path, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    cache: 'no-store',
+  })
+  if (!res.ok) throw new Error(await errorMessage(res))
+  return (res.status === 204 ? undefined : await res.json()) as T
+}
+
+export function listWatches(): Promise<WatchSummary[]> {
+  return watchRequest('/api/watches')
+}
+
+export function createWatch(name: string): Promise<WatchSummary> {
+  return watchRequest('/api/watches', 'POST', { name })
+}
+
+export function renameWatch(id: number, name: string): Promise<WatchSummary> {
+  return watchRequest(`/api/watches/${id}`, 'PATCH', { name })
+}
+
+export function deleteWatch(id: number): Promise<void> {
+  return watchRequest(`/api/watches/${id}`, 'DELETE')
+}
+
+export function getWatch(id: number): Promise<WatchDetail> {
+  return watchRequest(`/api/watches/${id}`)
+}
+
+/** The watch was set: a new session starts (the rate starts over). */
+export function startSession(id: number): Promise<WatchDetail> {
+  return watchRequest(`/api/watches/${id}/sessions`, 'POST')
+}
+
+export function saveMeasurement(watchId: number, measurement: NewMeasurement): Promise<SavedMeasurement> {
+  return watchRequest(`/api/watches/${watchId}/measurements`, 'POST', measurement)
+}
+
+export function deleteMeasurement(watchId: number, measurementId: number): Promise<void> {
+  return watchRequest(`/api/watches/${watchId}/measurements/${measurementId}`, 'DELETE')
 }

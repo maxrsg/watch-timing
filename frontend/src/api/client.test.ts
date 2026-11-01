@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { readDial } from './client'
+import { createWatch, readDial } from './client'
 
 function captureForm(): () => FormData {
   let body: FormData | undefined
@@ -58,5 +58,36 @@ describe('readDial', () => {
     expect(form().get('frame_timing')).toBe('tap')
     expect(form().get('platform')).toBe('android')
     expect(form().get('device_capture_time')).toBeTruthy()
+  })
+})
+
+describe('watch requests', () => {
+  it('send the owner ID with the watch and its JSON body', async () => {
+    let init: RequestInit | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, i: RequestInit) => {
+        init = i
+        return new Response('{}', { status: 201 })
+      }),
+    )
+    await createWatch('Seiko')
+    const headers = init!.headers as Record<string, string>
+    expect(headers['X-Owner-Id']).toMatch(/^[0-9a-f-]{36}$/)
+    expect(JSON.parse(init!.body as string)).toEqual({ name: 'Seiko' })
+  })
+
+  it('readDial sends the watch with the owner ID', async () => {
+    let init: RequestInit | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, i: RequestInit) => {
+        init = i
+        return new Response('{}', { status: 200 })
+      }),
+    )
+    await readDial(file, { x: 1, y: 2 }, undefined, undefined, undefined, 7)
+    expect((init!.body as FormData).get('watch_id')).toBe('7')
+    expect((init!.headers as Record<string, string>)['X-Owner-Id']).toBeTruthy()
   })
 })

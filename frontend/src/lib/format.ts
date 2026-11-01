@@ -45,3 +45,23 @@ export function formatDialTime(hours: number, minutes: number, seconds: number |
   const s = seconds === null ? '??' : seconds.toFixed(1).padStart(4, '0')
   return `${hours}:${String(minutes).padStart(2, '0')}:${s}`
 }
+
+/** "+3.2 s/d": a rate in seconds per day, explicit sign. */
+export function formatSignedRate(secondsPerDay: number): string {
+  return `${sign(secondsPerDay)}${Math.abs(secondsPerDay).toFixed(1)} s/d`
+}
+
+/** "Oct 20, 08:15": a date and time in the device's zone, for lists. */
+export function formatDateTime(utcMs: number, locale?: string): string {
+  return new Date(utcMs).toLocaleString(locale, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/** "photo EXIF" or "phone clock", for a reference source or a measurement's source key. */
+export function sourceLabel(source: string): string {
+  return source === 'exif' ? 'photo EXIF' : 'phone clock'
+}
