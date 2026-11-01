@@ -11,9 +11,11 @@ from PIL import ExifTags, Image, UnidentifiedImageError
 
 pillow_heif.register_heif_opener()
 
-# Pillow warns above this many pixels and raises DecompressionBombError above twice as many.
-# 50 MP covers a 48 MP phone sensor; anything over 100 MP is rejected.
-Image.MAX_IMAGE_PIXELS = 50_000_000
+# 50 MP covers a 48 MP phone sensor. Checked in open_image from the header, before decoding:
+# a full-size PNG or HEIC decode of more would not fit in the server's memory.
+MAX_PIXELS = 50_000_000
+# A second layer: Pillow warns above this and raises DecompressionBombError above twice as many.
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
 # What Pillow's EXIF/TIFF parser and decoders can raise on malformed files (found by fuzzing:
 # struct.error, TypeError and AttributeError besides the documented OSError/ValueError).
@@ -43,11 +45,15 @@ class InvalidImageError(ValueError):
 def open_image(data: bytes) -> Image.Image:
     """Open JPEG/HEIC/PNG bytes lazily (header only; pixels are decoded on first use)."""
     try:
-        return Image.open(io.BytesIO(data))
+        img = Image.open(io.BytesIO(data))
     except Image.DecompressionBombError as e:
         raise InvalidImageError("Image dimensions are too large.") from e
     except (UnidentifiedImageError, *MALFORMED_IMAGE_ERRORS) as e:
         raise InvalidImageError("File is not a readable image.") from e
+    if img.width * img.height > MAX_PIXELS:
+        img.close()
+        raise InvalidImageError("Image dimensions are too large (at most 50 megapixels).")
+    return img
 
 
 def read_exif(img: Image.Image) -> Image.Exif:
