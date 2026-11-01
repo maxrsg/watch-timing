@@ -1,0 +1,34 @@
+# fly.io: one small machine that scales to zero, SQLite on a 1 GB volume. See CLAUDE.md "Deploy".
+app = "watch-timing"   # must be unique on fly.io; change it before `fly launch`
+primary_region = "arn"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# SQLite lives here (WATCHTIMING_DB in the Dockerfile). One volume = one machine: deploy with --ha=false.
+[mounts]
+  source = "watchtiming_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  # A read decodes a photo of up to 50 MP: queue bursts instead of running out of memory.
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 2
+    hard_limit = 4
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"

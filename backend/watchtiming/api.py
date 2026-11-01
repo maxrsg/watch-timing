@@ -1,13 +1,16 @@
 import hashlib
 import json
+import os
 import sqlite3
 import uuid
 from collections.abc import Iterator
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Response, UploadFile
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, PlainSerializer, StringConstraints
 from starlette.concurrency import run_in_threadpool
 
@@ -736,3 +739,14 @@ def delete_measurement(watch_id: int, measurement_id: int, db: Db, owner: Owner)
     if not store.delete_measurement(db, watch, measurement_id):
         raise HTTPException(404, "Measurement not found.")
     return Response(status_code=204)
+
+
+def mount_frontend(target: FastAPI, folder: Path) -> None:
+    """Serve the built PWA (`frontend/dist`) at `/`. Mounted last, so the /api routes win.
+    Navigation is by location hash, so `/` → index.html is the only page needed."""
+    target.mount("/", StaticFiles(directory=folder, html=True), name="frontend")
+
+
+# Production (the Docker image) serves the frontend from the same origin; dev uses Vite.
+if static_dir := os.environ.get("WATCHTIMING_STATIC_DIR"):
+    mount_frontend(app, Path(static_dir))

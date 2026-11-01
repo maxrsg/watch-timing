@@ -1,0 +1,16 @@
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/dist
+**/dev-dist
+**/debug-out
+**/*.sqlite
+.git
+.claude
+.env
+notes
+docs
+backend/data
+backend/tests

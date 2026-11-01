@@ -38,16 +38,26 @@ pnpm gen:api         # regenerate TS types from backend OpenAPI (backend must be
 pnpm dlx shadcn@latest add <component>   # add a design-system component
 ```
 
+**Deploy (fly.io):** one Docker image (`Dockerfile`: pnpm builds the PWA, then the backend serves it from `frontend/dist` at `/` when `WATCHTIMING_STATIC_DIR` is set, next to `/api`). `fly.toml`: one `shared-cpu-1x` 1 GB machine that stops when idle, SQLite on the `watchtiming_data` volume at `/data`, at most 4 requests at a time (a read decodes up to 50 MP). It's a single machine on purpose: SQLite lives on one volume. There's no rate limiting yet, so set a billing alert.
+
+```bash
+docker build -t watchtiming . && docker run --rm -p 8080:8080 -v "$PWD/backend/data:/data" watchtiming   # local check
+fly launch --no-deploy --copy-config                          # once: create the app (rename `app` in fly.toml first)
+fly volumes create watchtiming_data --size 1 --region arn     # once
+fly deploy --ha=false                                         # one machine
+```
+
 To test on a phone: `pnpm dev` already serves HTTPS on the LAN (`@vitejs/plugin-basic-ssl`, `server.host: true`). Open the printed `Network:` URL and accept the self-signed certificate. Vite proxies `/api` to the backend on `localhost:8000`, so the phone only talks to one origin.
 
 ## Layout
 
 ```
+Dockerfile, .dockerignore, fly.toml   # deployment (see "Deploy (fly.io)")
 backend/watchtiming/
   exif.py       # capture timestamp → UTC, with subseconds
   reference.py  # the reference time: EXIF or device clock + latency correction
   limits.py     # request body size limit (ASGI middleware)
-  api.py        # FastAPI app (+ watches endpoints, X-Owner-Id)
+  api.py        # FastAPI app (+ watches endpoints, X-Owner-Id; serves the built PWA in production)
   store.py      # SQLite: watches, sessions, measurements, all filtered by the owner ID
   upload_log.py # dev only: saves /api/read uploads when WATCHTIMING_SAVE_UPLOADS is set
   devserver.py  # `watchtiming-dev` command: uvicorn with reload, --save-uploads sets that variable
@@ -73,6 +83,7 @@ backend/tests/
   test_assignment_stress.py  # steps 7–9 alone, on candidates with real hands' errors
   test_rate.py         # rate math (accuracy.py), incl. mixed sources
   test_api_watches.py  # watches/sessions/measurements API, owner isolation
+  test_api_static.py   # the built frontend served beside the API
 frontend/src/
   index.css            # Tailwind import + design tokens (the single source of truth)
   api/                 # generated schema.d.ts + typed fetch wrappers
