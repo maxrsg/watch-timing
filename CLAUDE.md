@@ -47,12 +47,15 @@ fly volumes create watchtiming_data --size 1 --region arn     # once
 fly deploy --ha=false                                         # one machine
 ```
 
+**CI/CD** (`.github/workflows/ci.yml`): every push and PR runs the backend checks (`uv sync --locked`, ruff, pytest) and the frontend checks (`pnpm install --frozen-lockfile`, lint, test, build). A push to `main` that passes both deploys with `flyctl deploy --remote-only --ha=false` (secret `FLY_API_TOKEN`, a `fly tokens create deploy` token; GitHub environment `production`). The first deploy (app + volume) is done by hand. Actions are pinned to commit SHAs.
+
 To test on a phone: `pnpm dev` already serves HTTPS on the LAN (`@vitejs/plugin-basic-ssl`, `server.host: true`). Open the printed `Network:` URL and accept the self-signed certificate. Vite proxies `/api` to the backend on `localhost:8000`, so the phone only talks to one origin.
 
 ## Layout
 
 ```
 Dockerfile, .dockerignore, fly.toml   # deployment (see "Deploy (fly.io)")
+.github/workflows/ci.yml              # checks on push/PR, deploy on main
 backend/watchtiming/
   exif.py       # capture timestamp → UTC, with subseconds
   reference.py  # the reference time: EXIF or device clock + latency correction
