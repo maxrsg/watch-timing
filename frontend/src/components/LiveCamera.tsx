@@ -1,19 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Aperture, LoaderCircle, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { errorText } from '@/lib/format'
+import { acquireCamera, cameraErrorMessage, releaseCamera } from '@/lib/camera'
 import { type CapturedFrame, captureFrame } from '@/lib/frame'
 
 // Undefined outside a secure context (plain HTTP).
 const hasCamera = () => typeof navigator.mediaDevices?.getUserMedia === 'function'
 const NO_CAMERA = 'This browser has no camera access (it needs HTTPS).'
-
-function cameraError(e: unknown): string {
-  if (e instanceof DOMException && e.name === 'NotAllowedError') {
-    return 'Camera access was denied. Allow it in the browser settings and try again.'
-  }
-  return errorText(e)
-}
 
 export function LiveCamera({
   disabled,
@@ -29,36 +22,25 @@ export function LiveCamera({
   const [error, setError] = useState<string | null>(() => (hasCamera() ? null : NO_CAMERA))
 
   useEffect(() => {
-    let stream: MediaStream | null = null
     let cancelled = false
     if (!hasCamera()) return
-    navigator.mediaDevices
-      .getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 3840 },
-          height: { ideal: 2160 },
-        },
-      })
+    const video = videoRef.current
+    // The page's one stream (lib/camera.ts): reopening the camera doesn't ask for permission
+    // again on iOS, and the stream stops by itself once unused for a while.
+    acquireCamera()
       .then(async (s) => {
-        if (cancelled) {
-          s.getTracks().forEach((t) => t.stop())
-          return
-        }
-        stream = s
-        const video = videoRef.current
-        if (!video) return
+        if (cancelled || !video) return
         video.srcObject = s
         await video.play()
         if (!cancelled) setReady(true)
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(cameraError(e))
+        if (!cancelled) setError(cameraErrorMessage(e))
       })
     return () => {
       cancelled = true
-      stream?.getTracks().forEach((t) => t.stop())
+      if (video) video.srcObject = null
+      releaseCamera()
     }
   }, [])
 
@@ -69,7 +51,7 @@ export function LiveCamera({
     try {
       onCapture(await captureFrame(video))
     } catch (e) {
-      setError(cameraError(e))
+      setError(cameraErrorMessage(e))
     }
   }
 

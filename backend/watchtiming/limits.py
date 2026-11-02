@@ -8,9 +8,12 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 class BodySizeLimit:
     """ASGI middleware: 413 on a too-large `Content-Length`, or once streamed bytes exceed it."""
 
-    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+    def __init__(
+        self, app: ASGIApp, max_bytes: int, message: str = "Request body is too large."
+    ) -> None:
         self.app = app
         self.max_bytes = max_bytes
+        self.message = message  # for the user: say what's too large and the limit
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -20,7 +23,7 @@ class BodySizeLimit:
         length = dict(scope["headers"]).get(b"content-length")
         if length is not None and (not length.isdigit() or int(length) > self.max_bytes):
             # Same JSON shape as the HTTPException below and FastAPI's own errors.
-            response = JSONResponse({"detail": "Request body is too large."}, 413)
+            response = JSONResponse({"detail": self.message}, 413)
             await response(scope, receive, send)
             return
 
@@ -34,7 +37,7 @@ class BodySizeLimit:
                 if received > self.max_bytes:
                     # Raised while the body is being read, before any response has started;
                     # FastAPI re-raises HTTPException from body parsing as-is.
-                    raise HTTPException(413, "Request body is too large.")
+                    raise HTTPException(413, self.message)
             return message
 
         await self.app(scope, limited_receive, send)

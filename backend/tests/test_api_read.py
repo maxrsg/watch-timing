@@ -268,3 +268,35 @@ def test_the_api_does_not_load_the_debug_tools():
     code = "import sys, watchtiming.api; print('watchtiming.debug' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False"
+
+
+def test_an_unexpected_pipeline_failure_still_answers(monkeypatch):
+    """A failure the pipeline doesn't expect becomes a reading error, not a 500: the photo
+    still has its reference time, and the user can type the time."""
+    import numpy as np
+
+    from watchtiming import api
+
+    def broken(*args, **kwargs):
+        raise np.linalg.LinAlgError("Singular matrix")
+
+    monkeypatch.setattr(api, "measure", broken)
+    r = post(photo("2026:10:18 10:08:34"))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["reading"] is None
+    assert "type the time" in body["reading_error"]
+    assert body["reference_time_utc"] is not None
+
+
+def test_reading_without_a_watch_does_not_need_the_database(monkeypatch, tmp_path):
+    blocker = tmp_path / "a-file"
+    blocker.write_text("")
+    monkeypatch.setenv("WATCHTIMING_DB", str(blocker / "watchtiming.sqlite"))  # can't be created
+    assert post(photo("2026:10:18 10:08:34")).status_code == 200
+
+
+def test_an_unreadable_upload_says_which_formats_work():
+    r = client.post("/api/read", files={"file": ("x.jpg", b"not an image", "image/jpeg")})
+    assert r.status_code == 422
+    assert "JPEG, HEIC or PNG" in r.json()["detail"]

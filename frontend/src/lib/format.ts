@@ -3,14 +3,36 @@ export function sign(value: number): string {
   return value > 0 ? '+' : value < 0 ? '−' : '±'
 }
 
+/** The value as shown with `digits` decimals: −0.04 shows as 0.0, so its sign is "±", not "−". */
+function shown(value: number, digits: number): number {
+  return Number(value.toFixed(digits))
+}
+
 /** "+3.2 s": explicit sign, one decimal. */
 export function formatSignedSeconds(seconds: number): string {
-  return `${sign(seconds)}${Math.abs(seconds).toFixed(1)} s`
+  const value = shown(seconds, 1)
+  return `${sign(value)}${Math.abs(value).toFixed(1)} s`
 }
 
 /** "+123 ms": explicit sign. */
 export function formatSignedMs(ms: number): string {
-  return `${sign(ms)}${Math.abs(ms).toFixed(0)} ms`
+  const value = shown(ms, 0)
+  return `${sign(value)}${Math.abs(value).toFixed(0)} ms`
+}
+
+/**
+ * Whether a deviation or rate (positive = fast) is fast or slow as shown with one decimal; null
+ * when it shows as ±0.0, which is neither.
+ */
+export function fastOrSlow(value: number): 'fast' | 'slow' | null {
+  const rounded = shown(value, 1)
+  return rounded > 0 ? 'fast' : rounded < 0 ? 'slow' : null
+}
+
+/** The fast/slow token color for a deviation or rate; none for ±0.0. */
+export function fastSlowClass(value: number): string | undefined {
+  const tone = fastOrSlow(value)
+  return tone === null ? undefined : tone === 'fast' ? 'text-fast' : 'text-slow'
 }
 
 /** "18:15:30.250" in UTC. */
@@ -48,7 +70,8 @@ export function formatDialTime(hours: number, minutes: number, seconds: number |
 
 /** "+3.2 s/d": a rate in seconds per day, explicit sign. */
 export function formatSignedRate(secondsPerDay: number): string {
-  return `${sign(secondsPerDay)}${Math.abs(secondsPerDay).toFixed(1)} s/d`
+  const value = shown(secondsPerDay, 1)
+  return `${sign(value)}${Math.abs(value).toFixed(1)} s/d`
 }
 
 /** "Oct 20, 08:15": a date and time in the device's zone, for lists. */

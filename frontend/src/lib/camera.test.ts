@@ -67,3 +67,13 @@ describe('acquireCamera', () => {
     expect(getUserMedia).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('cameraErrorMessage', () => {
+  it('says what to do for each kind of failure', () => {
+    expect(camera.cameraErrorMessage(new DOMException('', 'NotFoundError'))).toMatch(/library/)
+    expect(camera.cameraErrorMessage(new DOMException('', 'NotReadableError'))).toMatch(/in use/)
+    expect(camera.cameraErrorMessage(new DOMException('', 'NotAllowedError'))).toMatch(/denied/)
+    expect(camera.cameraErrorMessage({ name: 'OverconstrainedError' })).toMatch(/library/)
+    expect(camera.cameraErrorMessage(new Error('Something else'))).toBe('Something else')
+  })
+})

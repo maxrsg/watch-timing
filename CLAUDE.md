@@ -62,7 +62,7 @@ backend/watchtiming/
   limits.py     # request body size limit (ASGI middleware)
   ratelimit.py  # per-client rate limits (ASGI middleware, in memory)
   api.py        # FastAPI app (+ watches endpoints, X-Owner-Id; serves the built PWA in production)
-  store.py      # SQLite: watches, sessions, measurements, all filtered by the owner ID
+  store.py      # SQLite: watches, sessions, measurements, all filtered by the owner ID; schema changes = a new MIGRATIONS step
   upload_log.py # dev only: saves /api/read uploads when WATCHTIMING_SAVE_UPLOADS is set
   devserver.py  # `watchtiming-dev` command: uvicorn with reload, --save-uploads sets that variable
   imaging.py    # decoding image bytes (HEIC opener, pixel limit), shared

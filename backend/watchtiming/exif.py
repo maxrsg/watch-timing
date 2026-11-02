@@ -15,7 +15,23 @@ _Tag = ExifTags.Base
 
 
 class InvalidTimestampError(ValueError):
-    """No usable capture time: missing, malformed or implausible."""
+    """No usable capture time: missing, malformed or implausible. The message is for the user."""
+
+
+# What to do instead, for every timestamp the photo carries but that can't be used.
+USE_CAMERA = "Take the photo with the in-app camera instead."
+NO_OFFSET = (
+    "The photo's capture timestamp has no time zone offset, which the watch's local time needs. "
+    "Some cameras and older phones don't record it. " + USE_CAMERA
+)
+
+
+def _damaged(tag: str, value: str) -> InvalidTimestampError:
+    """The capture time is there but unreadable. The tag and value stay at the end, for bug
+    reports; the user reads the sentence before them."""
+    return InvalidTimestampError(
+        f"The photo's capture time is damaged, so it can't be used. {USE_CAMERA} ({tag}: {value!r})"
+    )
 
 
 @dataclass(frozen=True)
@@ -69,7 +85,7 @@ def _parse_subsec(subsec: str | None) -> int:
     if subsec is None:
         return 0
     if not _SUBSEC.fullmatch(subsec):
-        raise InvalidTimestampError(f"Invalid SubSecTimeOriginal: {subsec!r}")
+        raise _damaged("SubSecTimeOriginal", subsec)
     return int(subsec[:6].ljust(6, "0"))
 
 
@@ -77,10 +93,10 @@ def _parse_offset(offset: str) -> timezone:
     """'+02:00' → timezone(+2h). Real-world offsets are within ±14:00."""
     match = _OFFSET.fullmatch(offset)
     if not match:
-        raise InvalidTimestampError(f"Invalid OffsetTimeOriginal: {offset!r}")
+        raise _damaged("OffsetTimeOriginal", offset)
     sign, hours, minutes = match[1], int(match[2]), int(match[3])
     if hours > 14 or minutes > 59:
-        raise InvalidTimestampError(f"Invalid OffsetTimeOriginal: {offset!r}")
+        raise _damaged("OffsetTimeOriginal", offset)
     delta = timedelta(hours=hours, minutes=minutes)
     return timezone(delta if sign == "+" else -delta)
 
@@ -89,7 +105,7 @@ def exif_timezone(exif: CaptureExif) -> timezone:
     """The photo's local time zone (from OffsetTimeOriginal): the zone the phone, and most
     likely the watch, was set to."""
     if exif.offset_time_original is None:
-        raise InvalidTimestampError("The photo's capture timestamp has no time zone offset.")
+        raise InvalidTimestampError(NO_OFFSET)
     return _parse_offset(exif.offset_time_original)
 
 
@@ -104,12 +120,12 @@ def exif_capture_time(exif: CaptureExif) -> datetime:
             "apps and edited exports can't be used; take the photo with the camera."
         )
     if exif.offset_time_original is None:
-        raise InvalidTimestampError("The photo's capture timestamp has no time zone offset.")
+        raise InvalidTimestampError(NO_OFFSET)
 
     try:
         local = datetime.strptime(exif.datetime_original, "%Y:%m:%d %H:%M:%S")
     except ValueError as e:
-        raise InvalidTimestampError(f"Invalid DateTimeOriginal: {exif.datetime_original!r}") from e
+        raise _damaged("DateTimeOriginal", exif.datetime_original) from e
 
     local = local.replace(
         microsecond=_parse_subsec(exif.subsec_time_original),
@@ -118,4 +134,4 @@ def exif_capture_time(exif: CaptureExif) -> datetime:
     try:
         return local.astimezone(UTC)
     except OverflowError as e:  # e.g. year 1 with a positive offset
-        raise InvalidTimestampError(f"Invalid DateTimeOriginal: {exif.datetime_original!r}") from e
+        raise _damaged("DateTimeOriginal", exif.datetime_original) from e

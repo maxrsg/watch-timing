@@ -27,7 +27,15 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { errorText, formatDateTime, formatDialTime, formatSignedSeconds, sourceLabel } from '@/lib/format'
+import {
+  errorText,
+  fastOrSlow,
+  fastSlowClass,
+  formatDateTime,
+  formatDialTime,
+  formatSignedSeconds,
+  sourceLabel,
+} from '@/lib/format'
 import { rememberWatch } from '@/lib/last-watch'
 import { watchHash } from '@/lib/pages'
 import { rateNotes } from '@/lib/rate'
@@ -35,7 +43,10 @@ import { cn } from '@/lib/utils'
 
 const CORRECTION = { hands: 'hands placed', typed: 'typed' } as const
 
-/** A dialog asking to confirm an action; `onConfirm` runs, then the dialog closes. */
+/**
+ * A dialog asking to confirm an action; `onConfirm` runs, then the dialog closes. If it fails,
+ * the dialog stays open with the error, where the user is looking.
+ */
 function ConfirmDialog({
   trigger,
   title,
@@ -53,14 +64,22 @@ function ConfirmDialog({
 }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o)
+        setError(null)
+      }}
+    >
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
+        {error && <p className="text-sm text-destructive">{error}</p>}
         <DialogFooter>
           <DialogClose asChild>
             <Button size="touch" variant="outline">
@@ -73,8 +92,10 @@ function ConfirmDialog({
             disabled={busy}
             onClick={() => {
               setBusy(true)
+              setError(null)
               onConfirm()
                 .then(() => setOpen(false))
+                .catch((e: unknown) => setError(errorText(e)))
                 .finally(() => setBusy(false))
             }}
           >
@@ -89,6 +110,7 @@ function ConfirmDialog({
 function RenameDialog({ watch, onRenamed }: { watch: Watch; onRenamed: (name: string) => void }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState(watch.name)
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   return (
     <Dialog
@@ -109,12 +131,16 @@ function RenameDialog({ watch, onRenamed }: { watch: Watch; onRenamed: (name: st
           className="flex flex-col gap-4"
           onSubmit={(e) => {
             e.preventDefault()
+            if (busy) return
+            setBusy(true)
+            setError(null)
             renameWatch(watch.id, name)
               .then((w) => {
                 onRenamed(w.name)
                 setOpen(false)
               })
               .catch((err) => setError(errorText(err)))
+              .finally(() => setBusy(false))
           }}
         >
           <DialogHeader>
@@ -131,7 +157,7 @@ function RenameDialog({ watch, onRenamed }: { watch: Watch; onRenamed: (name: st
           />
           {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
-            <Button type="submit" size="touch" disabled={!name.trim()}>
+            <Button type="submit" size="touch" disabled={busy || !name.trim()}>
               Save
             </Button>
           </DialogFooter>
@@ -178,7 +204,7 @@ function MeasurementTable({
               </div>
             </TableCell>
             <TableCell
-              className={cn('text-right font-medium tabular-nums', m.deviation_s >= 0 ? 'text-fast' : 'text-slow')}
+              className={cn('text-right font-medium tabular-nums', fastSlowClass(m.deviation_s))}
             >
               {formatSignedSeconds(m.deviation_s)}
             </TableCell>
@@ -264,14 +290,15 @@ function SavedNotice({
   measurement: SavedMeasurement
   onDismiss: () => void
 }) {
-  const fast = measurement.deviation_s >= 0
+  const tone = fastOrSlow(measurement.deviation_s)
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-xl border border-primary/30 bg-primary/10 p-3 pl-4">
       <CircleCheck className="size-5 shrink-0 text-primary" />
       <p className="min-w-0 flex-1">
         Saved to {watch.name}:{' '}
-        <span className={cn('font-semibold tabular-nums', fast ? 'text-fast' : 'text-slow')}>
-          {formatSignedSeconds(measurement.deviation_s)} {fast ? 'fast' : 'slow'}
+        <span className={cn('font-semibold tabular-nums', fastSlowClass(measurement.deviation_s))}>
+          {formatSignedSeconds(measurement.deviation_s)}
+          {tone && ` ${tone}`}
         </span>
       </p>
       <div className="flex gap-1">
@@ -305,20 +332,11 @@ export function WatchDetail({ id, saved = null }: { id: number; saved?: number |
     if (saved !== null) history.replaceState(null, '', watchHash(id))
   }, [id, saved])
 
-  async function run(action: () => Promise<unknown>) {
-    setError(null)
-    try {
-      await action()
-    } catch (e) {
-      setError(errorText(e))
-    }
+  // Confirmed actions throw on failure: the confirm dialog shows the error.
+  async function removeMeasurement(mid: number) {
+    await deleteMeasurement(id, mid)
+    setWatch(await getWatch(id))
   }
-
-  const removeMeasurement = (mid: number) =>
-    run(async () => {
-      await deleteMeasurement(id, mid)
-      setWatch(await getWatch(id))
-    })
 
   if (!watch) {
     return (
@@ -359,12 +377,10 @@ export function WatchDetail({ id, saved = null }: { id: number; saved?: number |
           description="All its measurements are deleted too. This can't be undone."
           confirm="Delete watch"
           destructive
-          onConfirm={() =>
-            run(async () => {
-              await deleteWatch(id)
-              window.location.hash = '#watches'
-            })
-          }
+          onConfirm={async () => {
+            await deleteWatch(id)
+            window.location.hash = '#watches'
+          }}
         />
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
@@ -387,7 +403,7 @@ export function WatchDetail({ id, saved = null }: { id: number; saved?: number |
           title="Did you set the watch?"
           description="Setting the watch starts a new series: the rate starts over, and earlier measurements stay below."
           confirm="Start a new series"
-          onConfirm={() => run(async () => setWatch(await startSession(id)))}
+          onConfirm={async () => setWatch(await startSession(id))}
         />
       </div>
 

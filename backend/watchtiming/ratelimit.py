@@ -4,6 +4,10 @@ The app runs as one process on one machine (fly.toml, `--workers 1`), so memory 
 place for the counts; they start over on a restart, which is fine for abuse protection.
 Each client gets a token bucket per kind of request: a burst of `per_minute` at once, then
 `per_minute` spread over each minute.
+
+The client is the connecting address, or Fly's client header when trusted (`client_key`).
+Behind any other proxy every request comes from the proxy, so all clients share one bucket:
+a deployment elsewhere needs its own trusted client header here.
 """
 
 import math
