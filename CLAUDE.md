@@ -4,13 +4,27 @@ An app for tracking a mechanical watch's accuracy over time. The user takes a ph
 
 ## Status
 
-Milestone 1 (scaffolding + capture timestamp spike) is done: `exif.py` + `reference.py` + `POST /api/probe` (its spike page and the reference clock page were removed from the frontend on 2026-11-01; recover them from git `8e538d3` to recalibrate). Milestone 2 (synthetic dials + debug CLI) is done. Milestone 3 (the dial-reading pipeline, steps 1–9) is in place: `pipeline.read_dial(gray, tap)` reads every synthetic scenario within ±0.2 s or withholds the seconds and asks for confirmation. **Hands from line segments (branch `segment-hands`, 2026-10-20), adapted from a second prototype (watch-time):** the hands are found from their straight edges (LSD, `segments.py`), the pivot where the hands' centerlines meet, and the hand assignment uses real hands' tolerances, the seconds hand's counterweight and an optional expected time. **Real photos (an Orient diver; 8 local fixtures):** all 8 read the right hour and minute, 4 report seconds within ±0.6 s (the labels are good to about ±1 s), none is confidently wrong; a read takes 0.3–0.6 s. The other 4 withhold the seconds: on 3 the hour markers aren't recognised (12 o'clock from the tap only; the markers are visible, the cause is open), on 1 the seconds hand isn't found. Unconfirmed readings ask for confirmation, and the user can drag the hands into place on the photo (`/api/read` with `hour_*`/`minute_*`/`second_*` tips; the angles go through the same rectification). Even when no hands are found, the dial's geometry is returned so the hands can be placed. As a fallback the user can also type the time the dial shows, in optional fields that are always shown below the photo (`/api/read` with `typed_hours` 1–12, `typed_minutes`, `typed_seconds`; no tap needed, the dial isn't read, the photo only gives the reference time). `reading.correction` says where a reading came from: `null` (detected), `hands` or `typed`. Try it with the app's "Read dial" page (`ReadTest.tsx` → `POST /api/read`, `uv run watchtiming-dev --save-uploads` keeps the photos for debugging). **Watches (2026-11-01):** there's no login yet (a demo POC). The browser generates an anonymous owner ID (`lib/owner.ts`, localStorage) and sends it as `X-Owner-Id`; watches, sessions and measurements live in backend SQLite keyed by it (`store.py`, `WATCHTIMING_DB`, default `backend/data/watchtiming.sqlite`). Since anyone can make up an owner ID, writes are capped: 50 watches per owner, 200 sessions and 5,000 measurements per watch (409), and nothing new is stored once the database reaches `WATCHTIMING_DB_MAX_MB` (default 500, 507). A "copy link to my watches" link (`#watches?owner=<id>`) moves them to another browser; a later login can claim the ID. On the Read dial page the user picks a watch, `/api/read` gets its `watch_id` (the session predicts the expected deviation) and "Save to <watch>" posts the reading to `/api/watches/{id}/measurements` (the server recomputes the deviation; saving is the confirmation, so measurements are final; no offline queue yet) and then goes to that watch (`#watches/<id>?saved=<mid>`), which highlights the new measurement once. The Watches page shows each watch's rate, a deviation chart and the measurements per session; "I set the watch" starts a new session. Update this file when the stack, commands or structure change.
+Keep this file up to date when the stack, commands or structure change.
 
-**First task:** before building the CV pipeline, confirm that a photo taken through the PWA on a real iPhone and a real Android phone keeps `DateTimeOriginal`, `SubSecTimeOriginal` and `OffsetTimeOriginal`. Check this both when parsed in the browser and after upload. The design depends on it (see "Capture & timestamp"). **iPhone result:** `<input capture>` strips the timestamps; library picks keep them. Since in-app capture is required, the primary path is now a live in-app camera timestamped with the device clock (see "Capture & timestamp"). In-app camera timing verified on iPhone: constant ≈0.13 s lag, now corrected. Still to check: library byte match, installed PWA. Android: pending, no device available yet.
+A demo POC with no login yet. Built: capture timestamps (`exif.py`, `reference.py`, `POST /api/probe`), synthetic dials + the debug CLI, the dial-reading pipeline (steps 1–9, hands from line segments), hand correction and typed time, and watches with sessions, measurements and their rate. The spike page and the reference clock page (`/#clock`) were removed on 2026-11-01; recover them from git `8e538d3` to recalibrate.
+
+- **Synthetic dials:** every scenario reads within ±0.2 s or withholds the seconds.
+- **Real photos (an Orient diver, 8 local fixtures):** all 8 read the right hour and minute, 4 report seconds within ±0.6 s (the labels are good to about ±1 s), none is confidently wrong; a read takes 0.3–0.6 s. The other 4 withhold the seconds: on 3 the hour markers aren't recognised (12 o'clock from the tap only; the markers are visible, the cause is open), on 1 the seconds hand isn't found.
+- **Capture timestamps:** checked on iPhone (see "Capture & timestamp"). Still open: the library-pick byte match on iPhone, the installed PWA, and Android (no device yet).
+- **Not built yet:** the offline queue (no IndexedDB yet), login, automatic 12 o'clock.
+
+## App flow
+
+1. **Read dial** (`ReadTest.tsx`, the start page): pick a watch (`WatchPicker`), take a photo in the app or pick one, tap 12 → `POST /api/read` with the watch's `watch_id` (its session predicts the expected deviation). `uv run watchtiming-dev --save-uploads` keeps the photos for debugging.
+2. **Corrections**, when the reading isn't confident: drag the hands into place on the photo (`/api/read` with `hour_*`/`minute_*`/`second_*` tips; the angles go through the same rectification, and the dial's geometry is returned even when no hands are found), or type the time in the fields always shown below the photo (`typed_hours` 1–12, `typed_minutes`, `typed_seconds`; no tap needed, the dial isn't read, the photo only gives the reference time). `reading.correction` says where a reading came from: `null` (detected), `hands` or `typed`.
+3. **Save to <watch>** posts the reading to `/api/watches/{id}/measurements`. The server recomputes the deviation. Saving is the confirmation, so every stored measurement is final. The app then goes to `#watches/<id>?saved=<mid>`, which highlights the new measurement once.
+4. **Watches**: each watch's rate, a deviation chart and the measurements per session; "I set the watch" starts a new session.
+
+**Owners and limits:** the browser generates an anonymous owner ID (`lib/owner.ts`, localStorage) and sends it as `X-Owner-Id`. Watches, sessions and measurements live in backend SQLite keyed by it (`store.py`, `WATCHTIMING_DB`, default `backend/data/watchtiming.sqlite`). Since anyone can make up an owner ID, writes are capped: 50 watches per owner, 200 sessions and 5,000 measurements per watch (409), and nothing new is stored once the database reaches `WATCHTIMING_DB_MAX_MB` (default 500, 507). A "copy link to my watches" link (`#watches?owner=<id>`) moves them to another browser; a later login can claim the ID.
 
 ## Stack
 
-- **Frontend** (`frontend/`): React + TypeScript PWA using Vite + `vite-plugin-pwa` (Workbox). Reads EXIF in the browser with `exifr`. Stores data offline in IndexedDB. Styling: Tailwind CSS v4 (`@tailwindcss/vite`) + shadcn/ui as the design system (see "UI & design system").
+- **Frontend** (`frontend/`): React + TypeScript PWA using Vite + `vite-plugin-pwa` (Workbox). Reads EXIF in the browser with `exifr`. Styling: Tailwind CSS v4 (`@tailwindcss/vite`) + shadcn/ui as the design system (see "UI & design system").
 - **Backend** (`backend/`): Python 3.12+, FastAPI, OpenCV (`opencv-python-headless`), NumPy, Pillow + `pillow-heif`, SQLite. Managed with `uv`.
 - **Package manager:** **pnpm only** (version pinned via `packageManager` in `package.json`). Never use `npm`/`npx`/`yarn`. Use `pnpm dlx` for one-off commands.
 - **API contract:** FastAPI's OpenAPI schema is the source of truth. TS types are generated from it with `openapi-typescript`. Never hand-write API types in the frontend.
@@ -90,8 +104,9 @@ backend/tests/
   test_api_static.py   # the built frontend served beside the API
 frontend/src/
   index.css            # Tailwind import + design tokens (the single source of truth)
-  api/                 # generated schema.d.ts + typed fetch wrappers
-  components/ReadTest.tsx      # main page for now: capture → tap 12 → reading + overlay (or type the time)
+  api/                 # generated schema.d.ts + typed fetch wrappers (client.ts)
+  components/ReadTest.tsx      # start page: capture → tap 12 → reading + overlay (or type the time) → save
+  components/CapturePicker.tsx # in-app camera or library pick (LiveCamera.tsx, LibraryButton.tsx)
   components/PhotoOverlay.tsx  # photo + SVG layer in photo pixels (tap, dial, hands)
   components/TypedTimeForm.tsx # h/min/s inputs, the fallback when the reading isn't good enough
   components/AppMenu.tsx       # phones: menu button + navigation drawer (shadcn Sheet); pages in lib/pages.ts
@@ -100,8 +115,9 @@ frontend/src/
   components/WatchDetail.tsx   # #watches/<id>: sessions, rate, chart, measurements, rename/delete, "I set the watch"
   components/DeviationChart.tsx  # deviation vs time + fitted line (shadcn chart / Recharts)
   components/WatchPicker.tsx   # which watch the Read dial page measures
-  lib/                 # pure helpers (EXIF, clock offset, frame capture, formatting, typed time, pages, crop,
-                       # owner ID, storage, last watch, measurement-from-result, rate notes)
+  components/RateText.tsx, DefinitionRow.tsx  # small shared display pieces
+  lib/                 # pure helpers (camera, frame capture, EXIF, clock offset, platform, hands, formatting,
+                       # typed time, pages, crop, owner ID, storage, last watch, measurement-from-result, rate notes)
   components/ui/       # shadcn/ui components (generated, then owned by us)
   components/          # app components built from ui/
 ```
@@ -131,7 +147,7 @@ Two capture paths. Both go through `reference.reference_time()` (`backend/watcht
 - The frame has no EXIF, so the timestamp is sent next to the image as `device_capture_time` (ISO, UTC). This is the only path where canvas encoding is allowed.
 - Measure the device-vs-server clock offset (`GET /api/time`, shortest of several round trips) at capture and store it. EXIF is also just the phone's clock, so this path is no less trustworthy than EXIF.
 - The upload sends `device_capture_time`, `frame_timing` (`capture_time`, `presentation_time` or `tap`) and a coarse `platform` (`ios`, `android` or `other`, detected on the client) **together**; any partial set is rejected. The latency correction is looked up per `(platform, frame_timing)` (`FRAME_LATENCY` in `reference.py`). Unmeasured combinations are not corrected and are flagged as uncalibrated (`latency_correction_ms: null`). Store the timing source and platform on the measurement.
-- **Measured on iPhone, Firefox/WebKit (2026-10-14):** `(ios, capture_time)` lags the real exposure by a constant ≈0.132 s (±7 ms over 3 captures, measured by photographing the reference clock page `/#clock`, since removed; see Status). To calibrate another platform, compare the photo with **Server time at capture (raw)**, not the corrected time.
+- **Measured on iPhone, Firefox/WebKit (2026-10-14):** `(ios, capture_time)` lags the real exposure by a constant ≈0.132 s (±7 ms over 3 captures, measured by photographing the reference clock page `/#clock`, since removed; see Status). This is the only entry in `FRAME_LATENCY` so far. To calibrate another platform, compare the photo with **Server time at capture (raw)**, not the corrected time.
 
 **2. Library pick (secondary).** Photos taken earlier with the Camera app.
 - `<input type="file" accept="image/*">` **without `capture`**. Parse EXIF in the browser with `exifr` for immediate feedback **and** upload the original bytes unchanged (no canvas, resize or crop).
@@ -141,7 +157,7 @@ Two capture paths. Both go through `reference.reference_time()` (`backend/watcht
 - **Never use `<input capture>`.** Verified on iPhone, Firefox/WebKit (2026-10-14): it strips every timestamp tag (only Orientation survives). Library picks keep them.
 - If the image has an EXIF `DateTimeOriginal`, EXIF wins. A broken EXIF timestamp is rejected, never patched with the device time. No timestamp at all → reject with a clear message. Never fall back silently.
 - Capture times from either source must be plausible: from 2020-01-01 up to 5 minutes ahead of server time (`EARLIEST_CAPTURE`, `MAX_CLOCK_AHEAD`). The lower bound is loose on purpose, for offline-queued uploads.
-- Offline: queue captures in IndexedDB together with their timestamp (and clock offset, if one was measured) and upload when back online. Because the timestamp is recorded at capture, delayed processing stays correct.
+- Offline (planned, not built): queue captures in IndexedDB together with their timestamp (and clock offset, if one was measured) and upload when back online. Because the timestamp is recorded at capture, delayed processing stays correct.
 
 ## Dial-reading pipeline (backend, classical CV, no ML models)
 
@@ -164,8 +180,8 @@ Precision target: about ±0.2s for the hand reading and about ±0.5s for the who
 
 - **Watch**: a user can track several watches.
 - **Session**: a series of measurements since the watch was last set. Setting the watch starts a new session. Never compute a rate across sessions.
-- **Measurement**: dial reading (h:m:s), reference time (UTC), reference source (`exif` or `device_clock`), frame timing source and latency correction (device clock only), device-vs-server clock offset if measured, deviation, confidence, whether the user corrected it, status (`pending` until confident or confirmed, then `final`), the detected geometry (dial ellipse, pivot, hand angles, tap-12 point) and the image's SHA-256.
-- **Images are not stored.** The backend processes an upload in memory and discards it once the reading is returned. The hand-correction overlay is drawn on the frontend's local copy using the stored geometry, and the correction is sent as angles or h:m:s. The frontend deletes its local copy from IndexedDB once the measurement is final. Only `final` measurements count toward the rate. Consequence: old measurements can't be re-read when the CV improves.
+- **Measurement**: dial reading (h:m:s), reference time (UTC, plus its UTC offset), reference source (`exif` or `device_clock`), platform, frame timing source and latency correction (device clock only), device-vs-server clock offset if measured, deviation, confidence (overall and for the seconds), the correction (`null`, `hands` or `typed`), the detected geometry (dial ellipse, pivot, hand angles, tap-12 point) and the image's SHA-256. There's no pending state: a measurement is stored only when the user saves it, and saving is the confirmation.
+- **Images are not stored.** The backend processes an upload in memory and discards it once the reading is returned. The hand-correction overlay is drawn on the frontend's in-memory copy of the photo using the returned geometry, and the correction is sent as hand tips or h:m:s. (Once the offline queue exists, its IndexedDB copy is deleted after saving.) Consequence: old measurements can't be re-read when the CV improves.
 - **Deviation** = `dial_time - reference_time` in seconds. **Positive = fast.** Use this sign convention everywhere.
 - **Rate** (s/d) = slope of a **linear regression** of deviation against reference time within a session. Do not take the difference between just two points. Measurements should be at least about 24h apart.
 - **Mixed sources:** each reference source (`exif`, or `device_clock` per platform and frame timing) can have its own constant offset. Within one source that offset doesn't affect the rate, but mixing sources in a session puts a step in the deviations, and a plain regression turns that step into a rate error. Fit one slope with a separate intercept per source (or regress per source and warn), and unit-test the mixed case.
