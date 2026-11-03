@@ -27,17 +27,70 @@ export type TypedTime = { hours: number; minutes: number; seconds: number }
 
 export type DeviceCapture = { captureTime: Date; timing: FrameTiming; platform: Platform }
 
-async function errorMessage(res: Response): Promise<string> {
+/** How long a request may take. A read decodes a large photo, maybe on a machine just woken up. */
+const READ_TIMEOUT_MS = 60_000
+const TIMEOUT_MS = 15_000
+
+export const OFFLINE = "Can't reach the server. Check your connection and try again."
+export const TIMED_OUT = 'The server took too long to answer. Try again.'
+export const UNEXPECTED_RESPONSE = 'The server sent an unexpected response. Try again.'
+
+/** "typed_hours" → "Typed hours". */
+function fieldLabel(field: string): string {
+  const words = field.replaceAll('_', ' ')
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+/** When the server sent no message of its own (a proxy's error page, an empty body). */
+function statusMessage(status: number): string {
+  if (status === 413) return 'The photo is too large.'
+  if (status === 429) return 'Too many requests. Wait a moment and try again.'
+  if (status === 502 || status === 503 || status === 504) {
+    return 'The server is starting or unavailable. Try again in a moment.'
+  }
+  if (status >= 500) return 'The server had a problem. Try again.'
+  return `The request was refused (${status}).`
+}
+
+export async function errorMessage(res: Response): Promise<string> {
   try {
     const body = await res.json()
     if (typeof body.detail === 'string') return body.detail
-    // FastAPI validation errors: [{ loc, msg, type }, …]
+    // FastAPI validation errors: [{ loc, msg, type }, …]; name the field ("body", "query" … aren't).
     const first = Array.isArray(body.detail) ? body.detail[0] : undefined
-    if (typeof first?.msg === 'string') return first.msg
+    if (typeof first?.msg === 'string') {
+      const field = Array.isArray(first.loc) && first.loc.length > 1 ? first.loc.at(-1) : undefined
+      return typeof field === 'string' ? `${fieldLabel(field)}: ${first.msg}` : first.msg
+    }
   } catch {
     // Not JSON; fall through.
   }
-  return `Request failed (${res.status})`
+  return statusMessage(res.status)
+}
+
+/**
+ * fetch, with errors a user can act on: a lost connection or a timeout becomes a sentence
+ * instead of the browser's "Failed to fetch" / "Load failed", and an error status the server's
+ * message.
+ */
+async function request(path: string, init: RequestInit = {}, timeoutMs = TIMEOUT_MS): Promise<Response> {
+  let res: Response
+  try {
+    res = await fetch(path, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+  } catch (e) {
+    throw new Error(e instanceof DOMException && e.name === 'TimeoutError' ? TIMED_OUT : OFFLINE)
+  }
+  if (!res.ok) throw new Error(await errorMessage(res))
+  return res
+}
+
+/** The JSON body of a successful response (an HTML page from a proxy isn't one). */
+async function json<T>(res: Response): Promise<T> {
+  try {
+    return (await res.json()) as T
+  } catch {
+    throw new Error(UNEXPECTED_RESPONSE)
+  }
 }
 
 /**
@@ -78,9 +131,7 @@ export async function readDial(
       form.append(`${role}_y`, String(tip.y))
     }
   }
-  const res = await fetch('/api/read', { method: 'POST', body: form, headers })
-  if (!res.ok) throw new Error(await errorMessage(res))
-  return res.json()
+  return json(await request('/api/read', { method: 'POST', body: form, headers }, READ_TIMEOUT_MS))
 }
 
 /**
@@ -101,23 +152,20 @@ function uploadForm(file: File, device?: DeviceCapture): FormData {
 }
 
 export async function getServerTime(): Promise<ServerTime> {
-  const res = await fetch('/api/time', { cache: 'no-store' })
-  if (!res.ok) throw new Error(await errorMessage(res))
-  return res.json()
+  return json(await request('/api/time', { cache: 'no-store' }))
 }
 
 /** A watch request: JSON, with this browser's anonymous owner ID. */
 async function watchRequest<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const headers: Record<string, string> = { 'X-Owner-Id': ownerId() }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
-  const res = await fetch(path, {
+  const res = await request(path, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: 'no-store',
   })
-  if (!res.ok) throw new Error(await errorMessage(res))
-  return (res.status === 204 ? undefined : await res.json()) as T
+  return res.status === 204 ? (undefined as T) : json<T>(res)
 }
 
 export function listWatches(): Promise<WatchSummary[]> {

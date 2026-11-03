@@ -19,7 +19,14 @@ import { WatchPicker } from '@/components/WatchPicker'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { errorText, formatDialTime, formatSignedSeconds, formatWallTime } from '@/lib/format'
+import {
+  errorText,
+  fastOrSlow,
+  fastSlowClass,
+  formatDialTime,
+  formatSignedSeconds,
+  formatWallTime,
+} from '@/lib/format'
 import { type CapturedFrame, frameDevice, frameToFile } from '@/lib/frame'
 import { initialTip, initialTips } from '@/lib/hands'
 import { lastWatchId, rememberWatch } from '@/lib/last-watch'
@@ -41,15 +48,26 @@ type SaveState = { kind: 'idle' } | { kind: 'saving' } | { kind: 'error'; messag
 /** The watches to choose from and the chosen one (remembered per browser). */
 function useWatches() {
   const [watches, setWatches] = useState<WatchSummary[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
   const [chosen, setChosen] = useState<number | null>(lastWatchId)
   useEffect(() => {
-    // Without the watches the page still reads dials; it just can't save.
-    listWatches().then(setWatches, () => setWatches([]))
-  }, [])
+    // Without the watches the page still reads dials; it just can't save. A failure is not an
+    // empty list: the user has watches, they just couldn't be loaded.
+    listWatches().then(
+      (ws) => {
+        setWatches(ws)
+        setError(null)
+      },
+      (e: unknown) => setError(errorText(e)),
+    )
+  }, [attempt])
   const watch = watches?.find((w) => w.id === chosen) ?? null
   return {
     watches,
     watch,
+    error,
+    retry: () => setAttempt((n) => n + 1),
     choose(id: number | null) {
       setChosen(id)
       rememberWatch(id)
@@ -100,6 +118,7 @@ function instruction(photo: Photo | null, result: ReadResult | null, mode: Mode)
 function Result({ result }: { result: ReadResult }) {
   const r = result.reading
   const deviation = result.deviation_s
+  const tone = deviation === null ? null : fastOrSlow(deviation)
   return (
     <Card>
       <CardHeader>
@@ -126,9 +145,8 @@ function Result({ result }: { result: ReadResult }) {
         {result.timestamp_error && <p className="text-destructive">{result.timestamp_error}</p>}
 
         {deviation !== null && (
-          <p className={cn('text-2xl font-semibold tabular-nums', deviation >= 0 ? 'text-fast' : 'text-slow')}>
-            {formatSignedSeconds(deviation)}{' '}
-            <span className="text-base font-normal">{deviation >= 0 ? 'fast' : 'slow'}</span>
+          <p className={cn('text-2xl font-semibold tabular-nums', fastSlowClass(deviation))}>
+            {formatSignedSeconds(deviation)} {tone && <span className="text-base font-normal">{tone}</span>}
           </p>
         )}
         {r && r.seconds === null && (
@@ -181,7 +199,7 @@ export function ReadTest() {
   const [error, setError] = useState<string | null>(null)
   const [mode, setMode] = useState<Mode>({ kind: 'view' })
   const [save, setSave] = useState<SaveState>({ kind: 'idle' })
-  const { watches, watch, choose } = useWatches()
+  const { watches, watch, error: watchesError, retry: retryWatches, choose } = useWatches()
 
   const url = photo?.url
   useEffect(() => {
@@ -286,6 +304,16 @@ export function ReadTest() {
 
       <div className="contents lg:col-span-2 lg:flex lg:min-h-0 lg:flex-col lg:gap-4 lg:overflow-y-auto">
         <div className="order-1 flex flex-col gap-3 lg:order-none">
+          {watchesError && !watches && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <p className="flex-1 text-destructive">
+                Couldn't load your watches, so readings can't be saved right now. {watchesError}
+              </p>
+              <Button size="touch" variant="outline" onClick={retryWatches}>
+                <RotateCcw /> Try again
+              </Button>
+            </div>
+          )}
           {watches && (
             <WatchPicker
               watches={watches}

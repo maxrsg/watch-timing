@@ -1,15 +1,18 @@
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import uuid
 from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, PlainSerializer, StringConstraints
@@ -40,11 +43,17 @@ from watchtiming.reference import (
 from watchtiming.upload_log import save_upload, upload_dir
 
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024
+TOO_LARGE = f"The photo is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+
+logger = logging.getLogger(__name__)
+
+# Fail at startup, not on the first write, when the size limit is set wrongly.
+store.db_max_bytes()
 
 app = FastAPI(title="watch-timing")
 # Checked before parsing, so oversized uploads never reach disk. Room for multipart overhead;
 # the per-file check in the handler stays as a second layer.
-app.add_middleware(BodySizeLimit, max_bytes=MAX_UPLOAD_BYTES + 1024 * 1024)
+app.add_middleware(BodySizeLimit, max_bytes=MAX_UPLOAD_BYTES + 1024 * 1024, message=TOO_LARGE)
 # Added last, so it runs first: a client over its limit is turned away before its body is read.
 rate_limiter = RateLimiter()
 app.add_middleware(RateLimit, limiter=rate_limiter)
@@ -58,6 +67,30 @@ def _limit_reached(_: Request, e: store.LimitReached) -> JSONResponse:
 @app.exception_handler(store.StorageFull)
 def _storage_full(_: Request, e: store.StorageFull) -> JSONResponse:
     return JSONResponse({"detail": "The app's storage is full; nothing new can be saved."}, 507)
+
+
+@app.exception_handler(RequestValidationError)
+def _invalid_request(_: Request, e: RequestValidationError) -> JSONResponse:
+    # FastAPI's shape ({loc, msg, type}), without echoing the input back: a rejected NaN or
+    # infinity can't be written as JSON, and a whole upload needn't be returned either.
+    errors = [{k: err[k] for k in ("type", "loc", "msg") if k in err} for err in e.errors()]
+    return JSONResponse({"detail": errors}, 422)
+
+
+@app.exception_handler(sqlite3.OperationalError)
+def _database_unavailable(_: Request, e: sqlite3.OperationalError) -> JSONResponse:
+    # Locked past the busy timeout, disk full, I/O error: the request can be retried.
+    logger.error("Database error: %s", e)
+    return JSONResponse(
+        {"detail": "The database is busy or unavailable. Try again in a moment."}, 503
+    )
+
+
+@app.exception_handler(Exception)
+def _unexpected(_: Request, e: Exception) -> JSONResponse:
+    # Anything else: the same JSON shape as other errors, so the app shows a sentence. The
+    # traceback is logged by the server, which re-raises the exception after this response.
+    return JSONResponse({"detail": "Something went wrong on the server. Try again."}, 500)
 
 
 def _utc_millis(value: datetime) -> str:
@@ -95,8 +128,9 @@ class ProbeResult(BaseModel):
 
 
 class PhotoPoint(BaseModel):
-    x: float
-    y: float
+    # Finite only: a stored overlay must stay valid JSON.
+    x: float = Field(allow_inf_nan=False)
+    y: float = Field(allow_inf_nan=False)
 
 
 class HandOverlay(BaseModel):
@@ -156,7 +190,7 @@ class ServerTime(BaseModel):
 async def _read_upload(file: UploadFile) -> tuple[bytes, CaptureExif]:
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "Image is too large.")
+        raise HTTPException(413, TOO_LARGE)
     try:
         return data, read_capture_exif(data)
     except InvalidImageError as e:
@@ -360,11 +394,8 @@ def _reading_out(m: Measurement) -> DialReadingOut | None:
 
 
 def get_db() -> Iterator[sqlite3.Connection]:
-    conn = store.connect(store.db_path())
-    try:
+    with closing(store.connect(store.db_path())) as conn:
         yield conn
-    finally:
-        conn.close()
 
 
 def _owner_id(value: str) -> str:
@@ -387,10 +418,16 @@ Db = Annotated[sqlite3.Connection, Depends(get_db)]
 Owner = Annotated[str, Depends(require_owner)]
 
 
+WATCH_NOT_FOUND = (
+    "Watch not found. It may have been deleted, or it was added in another browser: open your "
+    "watches link there to bring it here."
+)
+
+
 def _watch_or_404(db: sqlite3.Connection, owner: str, watch_id: int) -> store.Watch:
     watch = store.get_watch(db, owner, watch_id)
     if watch is None:
-        raise HTTPException(404, "Watch not found.")
+        raise HTTPException(404, WATCH_NOT_FOUND)
     return watch
 
 
@@ -405,19 +442,24 @@ def _rate_points(measurements: list[store.SavedMeasurement]) -> list[RatePoint]:
     ]
 
 
-def _predicted_deviation(
-    db: sqlite3.Connection, owner: str | None, watch_id: int, ref: Reference | None
-) -> float | None:
-    """The deviation the watch's current session predicts for this photo."""
+def _predicted_deviation(owner: str | None, watch_id: int, ref: Reference | None) -> float | None:
+    """The deviation the watch's current session predicts for this photo. Opens the database
+    only here, so reading a dial without a watch doesn't depend on it."""
     if owner is None:
         raise HTTPException(422, "Send X-Owner-Id with watch_id.")
-    watch = _watch_or_404(db, owner, watch_id)
-    if ref is None:
-        return None
-    points = _rate_points(store.measurements(db, store.current_session(db, watch)))
+    with closing(store.connect(store.db_path())) as db:
+        watch = _watch_or_404(db, owner, watch_id)
+        if ref is None:
+            return None
+        points = _rate_points(store.measurements(db, store.current_session(db, watch)))
     platform = ref.device.platform if ref.device else None
     timing = ref.device.timing if ref.device else None
     return expected_deviation(points, ref.time, source_key(ref.source, platform, timing))
+
+
+UNEXPECTED_READ_ERROR = (
+    "Something went wrong reading this photo. Tap 12 o'clock to try again, or type the time."
+)
 
 
 @app.post("/api/read")
@@ -425,7 +467,6 @@ async def read(
     file: UploadFile,
     tips: Annotated[HandTips | None, Depends(_hand_tips)],
     typed: Annotated[DialTime | None, Depends(_typed_time)],
-    db: Db,
     owner: Annotated[str | None, Depends(optional_owner)],
     tap_x: Annotated[float | None, Form()] = None,
     tap_y: Annotated[float | None, Form()] = None,
@@ -463,8 +504,8 @@ async def read(
     data, exif = await _read_upload(file)
     sha256 = hashlib.sha256(data).hexdigest()
     ref, _, timestamp_error = _reference(exif, device_capture_time, frame_timing, platform)
-    if watch_id is not None and expected_deviation_s is None:
-        expected_deviation_s = _predicted_deviation(db, owner, watch_id, ref)
+    if watch_id is not None and expected_deviation_s is None and typed is None:
+        expected_deviation_s = _predicted_deviation(owner, watch_id, ref)
     try:
         pre = await run_in_threadpool(preprocess, data)
     except InvalidImageError as e:
@@ -477,7 +518,14 @@ async def read(
     if not (0 <= tap_x < width and 0 <= tap_y < height):
         raise HTTPException(422, "The tapped point is outside the photo.")
 
-    m = await run_in_threadpool(measure, pre, (tap_x, tap_y), ref, tips, expected_deviation_s)
+    try:
+        m = await run_in_threadpool(measure, pre, (tap_x, tap_y), ref, tips, expected_deviation_s)
+    except Exception:
+        # A failure the pipeline doesn't expect (a degenerate matrix, an OpenCV error): the photo
+        # still has its reference time, and the user can type the time.
+        logger.exception("Reading the dial failed unexpectedly")
+        tap_px = (tap_x * pre.scale, tap_y * pre.scale)
+        m = Measurement(None, None, UNEXPECTED_READ_ERROR, None, tap_px)
     result = ReadResult(
         image_width=width,
         image_height=height,
@@ -502,9 +550,13 @@ async def read(
             "filename": file.filename,
         }
         result_json = result.model_dump_json(indent=2)
-        await run_in_threadpool(
-            save_upload, root, data, file.content_type, request, pre, m, result_json
-        )
+        try:
+            await run_in_threadpool(
+                save_upload, root, data, file.content_type, request, pre, m, result_json
+            )
+        except Exception:
+            # Dev only: a failed save mustn't fail the read the user is waiting for.
+            logger.warning("Couldn't keep the upload in %s", root, exc_info=True)
     return result
 
 
@@ -670,7 +722,7 @@ def get_watch(watch_id: int, db: Db, owner: Owner) -> WatchDetail:
 @app.patch("/api/watches/{watch_id}")
 def rename_watch(watch_id: int, body: WatchIn, db: Db, owner: Owner) -> WatchSummary:
     if not store.rename_watch(db, owner, watch_id, body.name):
-        raise HTTPException(404, "Watch not found.")
+        raise HTTPException(404, WATCH_NOT_FOUND)
     return _summary(db, _watch_or_404(db, owner, watch_id))
 
 
@@ -678,7 +730,7 @@ def rename_watch(watch_id: int, body: WatchIn, db: Db, owner: Owner) -> WatchSum
 def delete_watch(watch_id: int, db: Db, owner: Owner) -> Response:
     """Deletes the watch with all its sessions and measurements."""
     if not store.delete_watch(db, owner, watch_id):
-        raise HTTPException(404, "Watch not found.")
+        raise HTTPException(404, WATCH_NOT_FOUND)
     return Response(status_code=204)
 
 
@@ -697,7 +749,11 @@ def _measurement_data(body: MeasurementIn, now: datetime) -> store.MeasurementDa
         raise HTTPException(422, "reference_time_utc must include a time zone.")
     ref_utc = body.reference_time_utc.astimezone(UTC)
     if not EARLIEST_CAPTURE <= ref_utc <= now + MAX_CLOCK_AHEAD:
-        raise HTTPException(422, "The reference time is implausible.")
+        raise HTTPException(
+            422,
+            f"The photo's capture time {ref_utc.isoformat(timespec='seconds')} is implausible. "
+            "Check the phone's date and time.",
+        )
     device_fields = (body.platform, body.frame_timing)
     if body.reference_source == ReferenceSource.DEVICE_CLOCK:
         device_fields_ok = all(f is not None for f in device_fields)

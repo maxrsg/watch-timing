@@ -2,6 +2,8 @@
 // earlier capture has stopped, so closing and reopening the camera reuses the stream instead.
 // It's stopped after a while unused, so the camera light doesn't stay on.
 
+import { errorText } from '@/lib/format'
+
 export const IDLE_STOP_MS = 2 * 60 * 1000
 
 const CONSTRAINTS: MediaStreamConstraints = {
@@ -60,3 +62,20 @@ export function releaseCamera() {
 }
 
 if (typeof window !== 'undefined') window.addEventListener('pagehide', stopCamera)
+
+/** getUserMedia's and play()'s errors, as what the user can do about them. */
+const CAMERA_ERRORS: Record<string, string> = {
+  NotAllowedError: 'Camera access was denied. Allow it in the browser settings and try again.',
+  SecurityError: 'Camera access was denied. Allow it in the browser settings and try again.',
+  NotFoundError: 'No camera was found. Choose a photo from the library instead.',
+  OverconstrainedError: 'No suitable camera was found. Choose a photo from the library instead.',
+  NotReadableError:
+    'The camera is in use by another app, or failed to start. Close other apps using it and try again.',
+  AbortError: 'The camera failed to start. Try again.',
+}
+
+export function cameraErrorMessage(e: unknown): string {
+  // OverconstrainedError isn't a DOMException in every browser, so go by the name.
+  const name = typeof e === 'object' && e !== null && 'name' in e ? String(e.name) : ''
+  return CAMERA_ERRORS[name] ?? errorText(e)
+}

@@ -1,5 +1,7 @@
 """Watches, sessions and measurements over the API, owned by an anonymous owner ID."""
 
+import json
+import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
 
@@ -264,3 +266,79 @@ def test_overlay_hands_are_bounded():
         "hands": [{"role": "other", "tip": point}] * 65,
     }  # fmt: skip
     assert save(watch_id, reading(REF, 1.0, overlay=overlay)).status_code == 422
+
+
+def test_a_locked_database_answers_503(monkeypatch):
+    import sqlite3
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "list_watches", locked)
+    res = client.get("/api/watches", headers=ME)
+    assert res.status_code == 503
+    assert "Try again" in res.json()["detail"]
+
+
+def test_an_unexpected_error_answers_with_a_sentence(monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(store, "list_watches", broken)
+    res = TestClient(app, raise_server_exceptions=False).get("/api/watches", headers=ME)
+    assert res.status_code == 500
+    assert res.json() == {"detail": "Something went wrong on the server. Try again."}
+
+
+def test_a_missing_watch_hints_at_the_owner_link():
+    res = client.get("/api/watches/999999", headers=owner())
+    assert res.status_code == 404
+    assert "another browser" in res.json()["detail"]
+
+
+def test_a_watch_without_a_session_gets_one(tmp_db):
+    watch_id = new_watch()
+    with store.connect(tmp_db) as conn:
+        conn.execute("DELETE FROM sessions WHERE watch_id = ?", (watch_id,))
+    assert save(watch_id, reading(REF, 1.0)).status_code == 201
+    assert len(client.get(f"/api/watches/{watch_id}", headers=ME).json()["sessions"]) == 1
+
+
+def test_non_finite_overlay_points_are_rejected():
+    watch_id = new_watch()
+    body = json.dumps(reading(REF, 1.0)).replace(
+        '"image_sha256"', '"tap": {"x": NaN, "y": 1}, "image_sha256"'
+    )
+    res = client.post(
+        f"/api/watches/{watch_id}/measurements",
+        content=body,
+        headers={**ME, "Content-Type": "application/json"},
+    )
+    assert res.status_code == 422
+
+
+def test_the_schema_is_versioned(tmp_db):
+    new_watch()
+    with store.connect(tmp_db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == len(store.MIGRATIONS)
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_an_unversioned_database_is_migrated(tmp_path):
+    path = tmp_path / "old.sqlite"
+    with sqlite3.connect(path) as old:  # as created before versioning
+        old.executescript(store.SCHEMA_V1)
+        old.execute(
+            "INSERT INTO watches (owner_id, name, created_at) VALUES (?, ?, ?)",
+            ("o", "Old", "2026-01-01T00:00:00.000+00:00"),
+        )
+    conn = store.connect(path)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(store.MIGRATIONS)
+    assert [w.name for w in store.list_watches(conn, "o")] == ["Old"]
+    conn.close()
+
+
+def test_a_malformed_size_limit_is_named(monkeypatch):
+    monkeypatch.setenv("WATCHTIMING_DB_MAX_MB", "lots")
+    with pytest.raises(ValueError, match="WATCHTIMING_DB_MAX_MB"):
+        store.db_max_bytes()

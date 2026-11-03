@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { adoptOwner, isOwnerId, ownerId, ownerLink, resetOwnerFallback } from './owner'
+import { adoptOwner, isOwnerId, ownerId, ownerLink, randomUuid, resetOwnerFallback } from './owner'
 
 function fakeStorage(): Storage {
   const data = new Map<string, string>()
@@ -64,4 +64,14 @@ it('builds the owner link', () => {
   vi.stubGlobal('localStorage', fakeStorage())
   adoptOwner(ID)
   expect(ownerLink('https://example.test', '/')).toBe(`https://example.test/#watches?owner=${ID}`)
+})
+
+describe('randomUuid', () => {
+  it('builds a v4 UUID without crypto.randomUUID (outside HTTPS)', () => {
+    vi.stubGlobal('crypto', { getRandomValues: (a: Uint8Array) => a.fill(0xff) })
+    const id = randomUuid()
+    vi.unstubAllGlobals()
+    expect(isOwnerId(id)).toBe(true)
+    expect(id).toBe('ffffffff-ffff-4fff-bfff-ffffffffffff')
+  })
 })

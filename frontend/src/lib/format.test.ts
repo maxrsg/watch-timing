@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   errorText,
+  fastOrSlow,
   formatDialTime,
   formatSignedMs,
   formatSignedRate,
@@ -15,6 +16,22 @@ describe('formatSignedSeconds', () => {
     expect(formatSignedSeconds(3.24)).toBe('+3.2 s')
     expect(formatSignedSeconds(-0.56)).toBe('−0.6 s')
     expect(formatSignedSeconds(0)).toBe('±0.0 s')
+  })
+
+  it('signs the value as shown, so a tiny deviation is ±0.0', () => {
+    expect(formatSignedSeconds(-0.04)).toBe('±0.0 s')
+    expect(formatSignedSeconds(0.04)).toBe('±0.0 s')
+    expect(formatSignedSeconds(-0.05)).toBe('−0.1 s')
+    expect(formatSignedRate(-0.01)).toBe('±0.0 s/d')
+  })
+})
+
+describe('fastOrSlow', () => {
+  it('follows the shown value: positive is fast, ±0.0 is neither', () => {
+    expect(fastOrSlow(1.2)).toBe('fast')
+    expect(fastOrSlow(-1.2)).toBe('slow')
+    expect(fastOrSlow(0)).toBeNull()
+    expect(fastOrSlow(-0.04)).toBeNull()
   })
 })
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createWatch, readDial } from './client'
+import { OFFLINE, TIMED_OUT, UNEXPECTED_RESPONSE, createWatch, listWatches, readDial } from './client'
 
 function captureForm(): () => FormData {
   let body: FormData | undefined
@@ -89,5 +89,52 @@ describe('watch requests', () => {
     await readDial(file, { x: 1, y: 2 }, undefined, undefined, undefined, 7)
     expect((init!.body as FormData).get('watch_id')).toBe('7')
     expect((init!.headers as Record<string, string>)['X-Owner-Id']).toBeTruthy()
+  })
+})
+
+describe('errors', () => {
+  function respond(response: () => Response | Promise<Response>) {
+    vi.stubGlobal('fetch', vi.fn(async () => response()))
+  }
+
+  it("say so when the server can't be reached", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Load failed')
+      }),
+    )
+    await expect(listWatches()).rejects.toThrow(OFFLINE)
+  })
+
+  it('say so when the server takes too long', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new DOMException('signal timed out', 'TimeoutError')
+      }),
+    )
+    await expect(listWatches()).rejects.toThrow(TIMED_OUT)
+  })
+
+  it("show the server's message", async () => {
+    respond(() => new Response(JSON.stringify({ detail: 'Watch not found.' }), { status: 404 }))
+    await expect(listWatches()).rejects.toThrow('Watch not found.')
+  })
+
+  it('name the field of a validation error', async () => {
+    const detail = [{ loc: ['body', 'typed_hours'], msg: 'Input should be less than or equal to 12', type: 'x' }]
+    respond(() => new Response(JSON.stringify({ detail }), { status: 422 }))
+    await expect(listWatches()).rejects.toThrow('Typed hours: Input should be less than or equal to 12')
+  })
+
+  it("explain a proxy's error page", async () => {
+    respond(() => new Response('<html>Bad gateway</html>', { status: 502 }))
+    await expect(listWatches()).rejects.toThrow('The server is starting or unavailable. Try again in a moment.')
+  })
+
+  it('catch a success that is not JSON', async () => {
+    respond(() => new Response('<html></html>', { status: 200 }))
+    await expect(listWatches()).rejects.toThrow(UNEXPECTED_RESPONSE)
   })
 })

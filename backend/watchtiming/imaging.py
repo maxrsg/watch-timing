@@ -42,6 +42,9 @@ class InvalidImageError(ValueError):
     """The bytes are not an image we can open."""
 
 
+NOT_AN_IMAGE = "The file isn't a readable image. Use a JPEG, HEIC or PNG photo."
+
+
 def open_image(data: bytes) -> Image.Image:
     """Open JPEG/HEIC/PNG bytes lazily (header only; pixels are decoded on first use)."""
     try:
@@ -49,7 +52,7 @@ def open_image(data: bytes) -> Image.Image:
     except Image.DecompressionBombError as e:
         raise InvalidImageError("Image dimensions are too large.") from e
     except (UnidentifiedImageError, *MALFORMED_IMAGE_ERRORS) as e:
-        raise InvalidImageError("File is not a readable image.") from e
+        raise InvalidImageError(NOT_AN_IMAGE) from e
     if img.width * img.height > MAX_PIXELS:
         img.close()
         raise InvalidImageError("Image dimensions are too large (at most 50 megapixels).")
@@ -78,6 +81,6 @@ def upright_rgb(img: Image.Image, image_orientation: int) -> Image.Image:
     try:
         rgb = img.convert("RGB")
     except MALFORMED_IMAGE_ERRORS as e:
-        raise InvalidImageError("File is not a readable image.") from e
+        raise InvalidImageError(NOT_AN_IMAGE) from e
     method = _UPRIGHT.get(image_orientation)
     return rgb.transpose(method) if method is not None else rgb
